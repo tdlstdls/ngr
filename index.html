@@ -443,8 +443,10 @@
                     baseConfig = ''; // ブランク時はベースもブランク
                 }
                 
+                // gachaConfigs を tableGachaIds のユニーク順に合わせる
                 const uniqueGachaIds = [...new Set(tableGachaIds.map(id => id.replace('g', '')))];
                 const gachaConfigs = uniqueGachaIds.map(id => gachaMasterData.gachas[id]).filter(Boolean);
+
 
                 // 2. シミュレーション実行 (ハイライトと計算過程のため)
                 const simulationResults = [];
@@ -544,9 +546,8 @@
                     return cell.rarity === 'rare' && prevCell.rarity === 'rare' && cell.char.id === prevCell.char.id;
                 }
 
-                gachaConfigs.forEach(config => {
+                gachaConfigs.forEach((config, gachaIndex) => { // gachaIndex を使用
                     if (!config) return;
-                    // let gachaIndex = tableData[0].A.length; // 挿入先のインデックス
                     let prevCellA = null;
                     let prevCellB = null;
 
@@ -554,13 +555,13 @@
                         if ((2 * i + 2) >= seeds.length) break; 
                         const charA = getCharAndRarity(config, seeds[2 * i], seeds[2 * i + 1]);
                         const cellA = { gachaId: config.id, char: charA, rarity: charA.rarity };
-                        tableData[i].A.push(cellA);
+                        tableData[i].A[gachaIndex] = cellA; // gachaIndex を使用
                         rerollMap.set(`A-${i}-${config.id}`, isRareDupe(cellA, prevCellA));
                         prevCellA = cellA;
 
                         const charB = getCharAndRarity(config, seeds[2 * i + 1], seeds[2 * i + 2]);
                         const cellB = { gachaId: config.id, char: charB, rarity: charB.rarity };
-                        tableData[i].B.push(cellB);
+                        tableData[i].B[gachaIndex] = cellB; // gachaIndex を使用
                         rerollMap.set(`B-${i}-${config.id}`, isRareDupe(cellB, prevCellB));
                         prevCellB = cellB;
                     }
@@ -570,7 +571,7 @@
                 // 4. リンク(sim-config)マップの計算
                 const cellSimConfigs = new Map(); // key 'A-i-id' -> "sim-config-string" or null
                 
-                // --- 修正: 継続の開始位置を正確に計算 ---
+                // --- 継続の開始位置を正確に計算 ---
                 let startSeedIndex = seedCursor;
                 let startRow = Math.floor(startSeedIndex / 2);
                 let startTrack = (startSeedIndex % 2 === 0) ? 'A' : 'B';
@@ -582,74 +583,391 @@
                 }
                 // --- 修正 終了 ---
 
-
+                // --- ▼▼▼ 修正ブロック (1)～(11) 実装 ▼▼▼ ---
                 for (let i = 0; i < numRolls; i++) {
+
+                    // (3)(4)(8)(10) のための行データ (i-1, i-2, i-3) を準備
+                    const rowData = (gachaId) => {
+                        const gachaIndex = gachaConfigs.findIndex(c => c.id === gachaId);
+                        if (gachaIndex === -1) return { config_prev: null, config_prev2: null, config_prev3: null, cell_prev: null, cell_prev2: null, isReroll_prev: false, isRare_prev: false };
+                        const cell_prev = (i > 0) ? tableData[i-1].A[gachaIndex] : null;
+                        return {
+                            config_prev: (i > 0) ? cellSimConfigs.get(`A-${i-1}-${gachaId}`) : null,
+                            config_prev2: (i > 1) ? cellSimConfigs.get(`A-${i-2}-${gachaId}`) : null,
+                            config_prev3: (i > 2) ? cellSimConfigs.get(`A-${i-3}-${gachaId}`) : null,
+                            cell_prev: cell_prev,
+                            cell_prev2: (i > 1) ? tableData[i-2].A[gachaIndex] : null,
+                            isReroll_prev: rerollMap.get(`A-${i-1}-${gachaId}`), // (i-1)が(i-2)と被ったか
+                            isRare_prev: cell_prev && cell_prev.rarity === 'rare',
+                        };
+                    };
+                    const rowDataB = (gachaId) => {
+                        const gachaIndex = gachaConfigs.findIndex(c => c.id === gachaId);
+                        if (gachaIndex === -1) return { config_prev: null, config_prev2: null, config_prev3: null, cell_prev: null, cell_prev2: null, isReroll_prev: false, isRare_prev: false };
+                        const cell_prev = (i > 0) ? tableData[i-1].B[gachaIndex] : null;
+                        return {
+                            config_prev: (i > 0) ? cellSimConfigs.get(`B-${i-1}-${gachaId}`) : null,
+                            config_prev2: (i > 1) ? cellSimConfigs.get(`B-${i-2}-${gachaId}`) : null,
+                            config_prev3: (i > 2) ? cellSimConfigs.get(`B-${i-3}-${gachaId}`) : null,
+                            cell_prev: cell_prev,
+                            cell_prev2: (i > 1) ? tableData[i-2].B[gachaIndex] : null,
+                            isReroll_prev: rerollMap.get(`B-${i-1}-${gachaId}`),
+                            isRare_prev: cell_prev && cell_prev.rarity === 'rare',
+                        };
+                    };
+
                     gachaConfigs.forEach(config => {
                         const id = config.id;
+                        const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
                         let configA = null;
                         let configB = null;
 
                         if (i < newRow1Index) {
-                            // FIXされた行
-                             if (i === 0) {
+                            // --- FIXされた行 ---
+                            if (i === 0) {
                                 configA = `${id}-1`;
                                 configB = null;
                             } else {
-                                const parentConfigA = cellSimConfigs.get(`A-${i-1}-${id}`);
-                                const parentConfigB = cellSimConfigs.get(`B-${i-1}-${id}`);
-                                const isReroll_A_prev = rerollMap.get(`A-${i-1}-${id}`);
-                                const isReroll_B_prev = rerollMap.get(`B-${i-1}-${id}`);
-                                if (isReroll_B_prev && parentConfigB) { configA = incrementLastRoll(parentConfigB); }
-                                else if (parentConfigA) { configA = incrementLastRoll(parentConfigA); }
-                                else { configA = null; }
+                                // (i > 0)
+                                // "新しい2行目" 以降 と同じロジックを適用
+                                const dataA = rowData(id);
+                                const dataB = rowDataB(id);
 
-                                if (isReroll_A_prev && parentConfigA) { configB = incrementLastRoll(parentConfigA); }
-                                else if (parentConfigB) { configB = incrementLastRoll(parentConfigB); }
-                                else { configB = null; }
+                                // (3)(4)(8)(10) のための「他ガチャ」スキャン (Aトラック用)
+                                const findOtherGachaA_prev = () => {
+                                    if (!dataA.cell_prev) return null;
+                                    for (let j = 0; j < gachaConfigs.length; j++) {
+                                        if (gachaConfigs[j].id === id) continue;
+                                        const otherCell = tableData[i-1].A[j];
+                                        if (otherCell && otherCell.char.id !== dataA.cell_prev.char.id) {
+                                            return gachaConfigs[j].id;
+                                        }
+                                    } return null;
+                                };
+                                const findOtherGachaA_prev2 = () => {
+                                    if (!dataA.cell_prev2) return null;
+                                    for (let j = 0; j < gachaConfigs.length; j++) {
+                                        if (gachaConfigs[j].id === id) continue;
+                                        const otherCell = tableData[i-2].A[j];
+                                        if (otherCell && otherCell.char.id !== dataA.cell_prev2.char.id) {
+                                            return gachaConfigs[j].id;
+                                        }
+                                    } return null;
+                                };
+                                const findSameCharGachaB_prev = (baseCell) => {
+                                    if (!baseCell || baseCell.rarity !== 'rare') return null;
+                                    for (let j = 0; j < gachaConfigs.length; j++) {
+                                        if (gachaConfigs[j].id === id) continue; 
+                                        const otherCell = tableData[i-1].B[j]; 
+                                        if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
+                                            return gachaConfigs[j].id;
+                                        }
+                                    } return null;
+                                };
+                                const findSameCharGachaB_prev2 = (baseCell) => {
+                                    if (!baseCell || baseCell.rarity !== 'rare') return null;
+                                    for (let j = 0; j < gachaConfigs.length; j++) {
+                                        const otherCell = tableData[i-2].B[j]; 
+                                        if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
+                                            return gachaConfigs[j].id;
+                                        }
+                                    } return null;
+                                };
+                                
+                                // (3)(4)(8)(10) のための「他ガチャ」スキャン (Bトラック用)
+                                const findOtherGachaB_prev = () => {
+                                    if (!dataB.cell_prev) return null;
+                                    for (let j = 0; j < gachaConfigs.length; j++) {
+                                        if (gachaConfigs[j].id === id) continue;
+                                        const otherCell = tableData[i-1].B[j];
+                                        if (otherCell && otherCell.char.id !== dataB.cell_prev.char.id) {
+                                            return gachaConfigs[j].id;
+                                        }
+                                    } return null;
+                                };
+                                const findOtherGachaB_prev2 = () => {
+                                    if (!dataB.cell_prev2) return null;
+                                    for (let j = 0; j < gachaConfigs.length; j++) {
+                                        if (gachaConfigs[j].id === id) continue;
+                                        const otherCell = tableData[i-2].B[j];
+                                        if (otherCell && otherCell.char.id !== dataB.cell_prev2.char.id) {
+                                            return gachaConfigs[j].id;
+                                        }
+                                    } return null;
+                                };
+                                const findSameCharGachaA_prev = (baseCell) => {
+                                    if (!baseCell || baseCell.rarity !== 'rare') return null;
+                                    for (let j = 0; j < gachaConfigs.length; j++) {
+                                        if (gachaConfigs[j].id === id) continue; 
+                                        const otherCell = tableData[i-1].A[j]; 
+                                        if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
+                                            return gachaConfigs[j].id;
+                                        }
+                                    } return null;
+                                };
+                                const findSameCharGachaA_prev2 = (baseCell) => {
+                                    if (!baseCell || baseCell.rarity !== 'rare') return null;
+                                    for (let j = 0; j < gachaConfigs.length; j++) {
+                                        const otherCell = tableData[i-2].A[j]; 
+                                        if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
+                                            return gachaConfigs[j].id;
+                                        }
+                                    } return null;
+                                };
+
+                                // A-i Logic (FIXED)
+                                if (dataA.config_prev) { // A-(i-1) リンクあり
+                                    if (!dataA.isRare_prev) { configA = incrementLastRoll(dataA.config_prev); } // (1)
+                                    else { // レア
+                                        if (!dataA.isReroll_prev) { configA = incrementLastRoll(dataA.config_prev); } // (2)
+                                        else { // (3)-(5) レア被り
+                                            const otherGachaId1 = findOtherGachaA_prev();
+                                            if (otherGachaId1 && dataA.config_prev2) { configA = `${dataA.config_prev2}-${otherGachaId1}-1-${id}-1`; } // (3)
+                                            else {
+                                                const otherGachaId2 = findOtherGachaA_prev2();
+                                                if (otherGachaId2 && dataA.config_prev3) { configA = `${dataA.config_prev3}-${otherGachaId2}-1-${id}-2`; } // (4)
+                                                else { configA = null; } // (5)
+                                            }
+                                        }
+                                    }
+                                } 
+                                if (!configA && dataA.config_prev === null) { // A-(i-1) リンクなし、または (5)
+                                    const dataB_forA = dataB; // rowDataB(id);
+                                    if (dataB_forA.config_prev) { // B-(i-1) にリンクがある場合
+                                        if (!dataB_forA.isRare_prev) { // (6)(7)(8) 
+                                            const otherGachaId1_B = findSameCharGachaB_prev(dataB_forA.cell_prev); // (7)
+                                            if (otherGachaId1_B) {
+                                                const otherGachaId2_B = findSameCharGachaB_prev2(dataB_forA.cell_prev); // (8)
+                                                if (otherGachaId2_B && dataB_forA.config_prev3) { configA = `${dataB_forA.config_prev3}-${otherGachaId2_B}-1-${otherGachaId1_B}-1-${id}-1`; } // (8)
+                                                else { configA = null; } // (7)
+                                            } else { configA = null; } // (6)
+                                        } else { // B-(i-1) がレア
+                                            if (dataB_forA.isReroll_prev) { configA = incrementLastRoll(dataB_forA.config_prev); } // (9)
+                                            else { // (10)(11)
+                                                const otherGachaId1_B_same = findSameCharGachaB_prev(dataB_forA.cell_prev); // (10)
+                                                if (otherGachaId1_B_same && dataB_forA.config_prev3) { configA = `${dataB_forA.config_prev3}-${otherGachaId1_B_same}-1-${id}-1`; } // (10)
+                                                else { configA = null; } // (11)
+                                            }
+                                        }
+                                    } else { configA = null; }
+                                }
+                                
+                                // B-i Logic (FIXED)
+                                if (dataB.config_prev) { // B-(i-1) リンクあり
+                                    if (!dataB.isRare_prev) { configB = incrementLastRoll(dataB.config_prev); } // (1)
+                                    else { // レア
+                                        if (!dataB.isReroll_prev) { configB = incrementLastRoll(dataB.config_prev); } // (2)
+                                        else { // (3)-(5) レア被り
+                                            const otherGachaId1 = findOtherGachaB_prev();
+                                            if (otherGachaId1 && dataB.config_prev2) { configB = `${dataB.config_prev2}-${otherGachaId1}-1-${id}-1`; } // (3)
+                                            else {
+                                                const otherGachaId2 = findOtherGachaB_prev2();
+                                                if (otherGachaId2 && dataB.config_prev3) { configB = `${dataB.config_prev3}-${otherGachaId2}-1-${id}-2`; } // (4)
+                                                else { configB = null; } // (5)
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!configB && dataB.config_prev === null) { // B-(i-1) リンクなし、または (5)
+                                    const dataA_forB = dataA; // rowData(id);
+                                    if (dataA_forB.config_prev) { // A-(i-1) にリンクがある場合
+                                        if (!dataA_forB.isRare_prev) { // (6)(7)(8) 
+                                            const otherGachaId1_A = findSameCharGachaA_prev(dataA_forB.cell_prev); // (7)
+                                            if (otherGachaId1_A) {
+                                                const otherGachaId2_A = findSameCharGachaA_prev2(dataA_forB.cell_prev); // (8)
+                                                if (otherGachaId2_A && dataA_forB.config_prev3) { configB = `${dataA_forB.config_prev3}-${otherGachaId2_A}-1-${otherGachaId1_A}-1-${id}-1`; } // (8)
+                                                else { configB = null; } // (7)
+                                            } else { configB = null; } // (6)
+                                        } else { // A-(i-1) がレア
+                                            if (dataA_forB.isReroll_prev) { configB = incrementLastRoll(dataA_forB.config_prev); } // (9)
+                                            else { // (10)(11)
+                                                const otherGachaId1_A_same = findSameCharGachaA_prev(dataA_forB.cell_prev); // (10)
+                                                if (otherGachaId1_A_same && dataA_forB.config_prev3) { configB = `${dataA_forB.config_prev3}-${otherGachaId1_A_same}-1-${id}-1`; } // (10)
+                                                else { configB = null; } // (11)
+                                            }
+                                        }
+                                    } else { configB = null; }
+                                }
                             }
                         } else if (i === newRow1Index) {
-                            // "新しい1行目" (FIX & Continueの開始点)
-                            
-                            // --- 修正: startTrackに応じて開始列を決定 ---
+                            // --- "新しい1行目" (FIX & Continueの開始点) ---
                             if (startTrack === 'A') {
                                 configA = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
-                                configB = null; // B列1行目は常にnull
+                                configB = null; 
                             } else { // startTrack === 'B'
-                                configA = null; // A列はスキップ
+                                configA = null; 
                                 configB = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
                             }
-                            // --- 修正 終了 ---
-                            
                         } else {
-                            // "新しい2行目" 以降
-                            const parentConfigA = cellSimConfigs.get(`A-${i-1}-${id}`);
-                            const parentConfigB = cellSimConfigs.get(`B-${i-1}-${id}`);
-                            const isReroll_A_prev = rerollMap.get(`A-${i-1}-${id}`);
-                            const isReroll_B_prev = rerollMap.get(`B-${i-1}-${id}`);
+                            // --- "新しい2行目" 以降 ---
+                            // (i > 0)
+                            // "新しい2行目" 以降 と同じロジックを適用
+                            const dataA = rowData(id);
+                            const dataB = rowDataB(id);
 
-                            // A-i Logic
-                            if (isReroll_B_prev && parentConfigB) {
-                                configA = incrementLastRoll(parentConfigB); // (2) レア被りによるジャンプ
-                            } else if (parentConfigA) {
-                                configA = incrementLastRoll(parentConfigA); // (1) 通常ルート
-                            } else {
-                                configA = null; // 継承 (親がnullなら子もnull)
+                            // (3)(4)(8)(10) のための「他ガチャ」スキャン (Aトラック用)
+                            const findOtherGachaA_prev = () => {
+                                if (!dataA.cell_prev) return null;
+                                for (let j = 0; j < gachaConfigs.length; j++) {
+                                    if (gachaConfigs[j].id === id) continue;
+                                    const otherCell = tableData[i-1].A[j];
+                                    if (otherCell && otherCell.char.id !== dataA.cell_prev.char.id) {
+                                        return gachaConfigs[j].id;
+                                    }
+                                } return null;
+                            };
+                            const findOtherGachaA_prev2 = () => {
+                                if (!dataA.cell_prev2) return null;
+                                for (let j = 0; j < gachaConfigs.length; j++) {
+                                    if (gachaConfigs[j].id === id) continue;
+                                    const otherCell = tableData[i-2].A[j];
+                                    if (otherCell && otherCell.char.id !== dataA.cell_prev2.char.id) {
+                                        return gachaConfigs[j].id;
+                                    }
+                                } return null;
+                            };
+                            const findSameCharGachaB_prev = (baseCell) => {
+                                if (!baseCell || baseCell.rarity !== 'rare') return null;
+                                for (let j = 0; j < gachaConfigs.length; j++) {
+                                    if (gachaConfigs[j].id === id) continue; 
+                                    const otherCell = tableData[i-1].B[j]; 
+                                    if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
+                                        return gachaConfigs[j].id;
+                                    }
+                                } return null;
+                            };
+                            const findSameCharGachaB_prev2 = (baseCell) => {
+                                if (!baseCell || baseCell.rarity !== 'rare') return null;
+                                for (let j = 0; j < gachaConfigs.length; j++) {
+                                    const otherCell = tableData[i-2].B[j]; 
+                                    if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
+                                        return gachaConfigs[j].id;
+                                    }
+                                } return null;
+                            };
+                            
+                            // (3)(4)(8)(10) のための「他ガチャ」スキャン (Bトラック用)
+                            const findOtherGachaB_prev = () => {
+                                if (!dataB.cell_prev) return null;
+                                for (let j = 0; j < gachaConfigs.length; j++) {
+                                    if (gachaConfigs[j].id === id) continue;
+                                    const otherCell = tableData[i-1].B[j];
+                                    if (otherCell && otherCell.char.id !== dataB.cell_prev.char.id) {
+                                        return gachaConfigs[j].id;
+                                    }
+                                } return null;
+                            };
+                            const findOtherGachaB_prev2 = () => {
+                                if (!dataB.cell_prev2) return null;
+                                for (let j = 0; j < gachaConfigs.length; j++) {
+                                    if (gachaConfigs[j].id === id) continue;
+                                    const otherCell = tableData[i-2].B[j];
+                                    if (otherCell && otherCell.char.id !== dataB.cell_prev2.char.id) {
+                                        return gachaConfigs[j].id;
+                                    }
+                                } return null;
+                            };
+                            const findSameCharGachaA_prev = (baseCell) => {
+                                if (!baseCell || baseCell.rarity !== 'rare') return null;
+                                for (let j = 0; j < gachaConfigs.length; j++) {
+                                    if (gachaConfigs[j].id === id) continue; 
+                                    const otherCell = tableData[i-1].A[j]; 
+                                    if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
+                                        return gachaConfigs[j].id;
+                                    }
+                                } return null;
+                            };
+                            const findSameCharGachaA_prev2 = (baseCell) => {
+                                if (!baseCell || baseCell.rarity !== 'rare') return null;
+                                for (let j = 0; j < gachaConfigs.length; j++) {
+                                    const otherCell = tableData[i-2].A[j]; 
+                                    if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
+                                        return gachaConfigs[j].id;
+                                    }
+                                } return null;
+                            };
+
+                            // A-i Logic (Continue)
+                            if (dataA.config_prev) { // A-(i-1) リンクあり
+                                if (!dataA.isRare_prev) { configA = incrementLastRoll(dataA.config_prev); } // (1)
+                                else { // レア
+                                    if (!dataA.isReroll_prev) { configA = incrementLastRoll(dataA.config_prev); } // (2)
+                                    else { // (3)-(5) レア被り
+                                        const otherGachaId1 = findOtherGachaA_prev();
+                                        if (otherGachaId1 && dataA.config_prev2) { configA = `${dataA.config_prev2}-${otherGachaId1}-1-${id}-1`; } // (3)
+                                        else {
+                                            const otherGachaId2 = findOtherGachaA_prev2();
+                                            if (otherGachaId2 && dataA.config_prev3) { configA = `${dataA.config_prev3}-${otherGachaId2}-1-${id}-2`; } // (4)
+                                            else { configA = null; } // (5)
+                                        }
+                                    }
+                                }
+                            } 
+                            if (!configA && dataA.config_prev === null) { // A-(i-1) リンクなし、または (5)
+                                const dataB_forA = dataB; // rowDataB(id);
+                                if (dataB_forA.config_prev) { // B-(i-1) にリンクがある場合
+                                    if (!dataB_forA.isRare_prev) { // (6)(7)(8) 
+                                        const otherGachaId1_B = findSameCharGachaB_prev(dataB_forA.cell_prev); // (7)
+                                        if (otherGachaId1_B) {
+                                            const otherGachaId2_B = findSameCharGachaB_prev2(dataB_forA.cell_prev); // (8)
+                                            if (otherGachaId2_B && dataB_forA.config_prev3) { configA = `${dataB_forA.config_prev3}-${otherGachaId2_B}-1-${otherGachaId1_B}-1-${id}-1`; } // (8)
+                                            else { configA = null; } // (7)
+                                        } else { configA = null; } // (6)
+                                    } else { // B-(i-1) がレア
+                                        if (dataB_forA.isReroll_prev) { configA = incrementLastRoll(dataB_forA.config_prev); } // (9)
+                                        else { // (10)(11)
+                                            const otherGachaId1_B_same = findSameCharGachaB_prev(dataB_forA.cell_prev); // (10)
+                                            if (otherGachaId1_B_same && dataB_forA.config_prev3) { configA = `${dataB_forA.config_prev3}-${otherGachaId1_B_same}-1-${id}-1`; } // (10)
+                                            else { configA = null; } // (11)
+                                        }
+                                    }
+                                } else { configA = null; }
+                            }
+                            
+                            // B-i Logic (Continue)
+                            if (dataB.config_prev) { // B-(i-1) リンクあり
+                                if (!dataB.isRare_prev) { configB = incrementLastRoll(dataB.config_prev); } // (1)
+                                else { // レア
+                                    if (!dataB.isReroll_prev) { configB = incrementLastRoll(dataB.config_prev); } // (2)
+                                    else { // (3)-(5) レア被り
+                                        const otherGachaId1 = findOtherGachaB_prev();
+                                        if (otherGachaId1 && dataB.config_prev2) { configB = `${dataB.config_prev2}-${otherGachaId1}-1-${id}-1`; } // (3)
+                                        else {
+                                            const otherGachaId2 = findOtherGachaB_prev2();
+                                            if (otherGachaId2 && dataB.config_prev3) { configB = `${dataB.config_prev3}-${otherGachaId2}-1-${id}-2`; } // (4)
+                                            else { configB = null; } // (5)
+                                        }
+                                    }
+                                }
+                            }
+                            if (!configB && dataB.config_prev === null) { // B-(i-1) リンクなし、または (5)
+                                const dataA_forB = dataA; // rowData(id);
+                                if (dataA_forB.config_prev) { // A-(i-1) にリンクがある場合
+                                    if (!dataA_forB.isRare_prev) { // (6)(7)(8) 
+                                        const otherGachaId1_A = findSameCharGachaA_prev(dataA_forB.cell_prev); // (7)
+                                        if (otherGachaId1_A) {
+                                            const otherGachaId2_A = findSameCharGachaA_prev2(dataA_forB.cell_prev); // (8)
+                                            if (otherGachaId2_A && dataA_forB.config_prev3) { configB = `${dataA_forB.config_prev3}-${otherGachaId2_A}-1-${otherGachaId1_A}-1-${id}-1`; } // (8)
+                                            else { configB = null; } // (7)
+                                        } else { configB = null; } // (6)
+                                    } else { // A-(i-1) がレア
+                                        if (dataA_forB.isReroll_prev) { configB = incrementLastRoll(dataA_forB.config_prev); } // (9)
+                                        else { // (10)(11)
+                                            const otherGachaId1_A_same = findSameCharGachaA_prev(dataA_forB.cell_prev); // (10)
+                                            if (otherGachaId1_A_same && dataA_forB.config_prev3) { configB = `${dataA_forB.config_prev3}-${otherGachaId1_A_same}-1-${id}-1`; } // (10)
+                                            else { configB = null; } // (11)
+                                        }
+                                    }
+                                } else { configB = null; }
                             }
 
-                            // B-i Logic
-                            if (isReroll_A_prev && parentConfigA) {
-                                configB = incrementLastRoll(parentConfigA); // (2) レア被りによるジャンプ
-                            } else if (parentConfigB) {
-                                configB = incrementLastRoll(parentConfigB); // (1) 通常ルート
-                            } else {
-                                configB = null; // 継承
-                            }
-                        }
+                        } // (i >= newRow1Index)
 
                         cellSimConfigs.set(`A-${i}-${id}`, configA);
                         cellSimConfigs.set(`B-${i}-${id}`, configB);
-                    });
-                }
+                    }); // gachaConfigs.forEach
+                } // for (i)
+                // --- ▲▲▲ 修正ブロック (1)～(11) 実装 ▲▲▲ ---
 
 
                 // 5. HTMLテーブルの構築
