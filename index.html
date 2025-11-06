@@ -12,7 +12,8 @@
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
         /* Removed th:not, td:not rule that set width: 100% */
         th { background-color: #f2f2f2; text-align: center; vertical-align: middle; position: relative; }
-        .highlight { background-color: #ffff99; }
+        .highlight { background-color: #CCFFCE; } /* Light Green */
+        .highlight-uber { background-color: #6EFF72; color: white; } /* Lighter Green */
         .gacha-select-header { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; }
         .gacha-select-header span { margin-left: 5px; font-size: 12px; }
         .gacha-select-header select {
@@ -1137,7 +1138,11 @@
                     const altData = cellSimConfigs_Alt.get(`${track}-${i}-${id}`) || { link: null, rerollCharName: null };
                     const altConfigStr = altData.link;
                     
-                    const highlightClass = (highlightMap.get(`${i}-${track}`) === id) ? ' highlight' : '';
+                    let highlightClass = (highlightMap.get(`${i}-${track}`) === id) ? ' highlight' : '';
+                    if (highlightClass && fullRoll.rarity === 'uber') {
+                        highlightClass = ' highlight-uber';
+                    }
+
                     let cellContent = '';
                     
                     // 1. Next Cell Address/Link Calculation
@@ -1264,7 +1269,7 @@
 
                             // *** 確定枠のハイライト判定 (AトラックのG列) ***
                             if (highlightMap.get(`${i}-AG`) === id) {
-                                guaranteedHighlight = ' class="highlight"';
+                                guaranteedHighlight = ' class="highlight-uber"';
                             }
                             // *************************************************
 
@@ -1322,7 +1327,7 @@
                              
                              // *** 確定枠のハイライト判定 (BトラックのG列) ***
                              if (highlightMap.get(`${i}-BG`) === id) {
-                                guaranteedHighlight = ' class="highlight"';
+                                guaranteedHighlight = ' class="highlight-uber"';
                              }
                              // *************************************************
 
