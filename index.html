@@ -2,6 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>なんちゃってレアガチャロールズ</title>
     <style>
         body { font-family: Arial, sans-serif; padding: 20px; }
@@ -32,6 +33,42 @@
         .hidden { display: none; }
         .seed-column { width: 90px; text-align: center; font-size: 10px; color: #555; }
         .col-no { width: 45px; text-align: center; white-space: nowrap; }
+
+        @media screen and (max-width: 768px) {
+            body {
+                padding: 5px;
+                -webkit-text-size-adjust: 100%;
+            }
+            h1 {
+                font-size: 1.2em;
+            }
+            #controls {
+                padding: 10px;
+            }
+            #controls label,
+            #controls input,
+            #controls button {
+                display: block;
+                width: 95%;
+                margin: 0 auto 10px auto;
+                box-sizing: border-box;
+            }
+            #rolls-table-container {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            table {
+                width: auto;
+                min-width: 800px;
+            }
+            th, td {
+                padding: 6px;
+                font-size: 12px;
+            }
+            .gacha-select-header span {
+                font-size: 10px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1164,8 +1201,16 @@
                         // 再抽選後 (誘発リンク)
                         if (altConfigStr) {
                             const rerollCharName = altData.rerollCharName || "??";
+                            
                             // 誘発(3-seed)はアドレスプレフィックスが *つく*
-                            const inducedAddressPrefix = nextAddress ? `${nextAddress}) ` : ''; // (i*2)+2 が 3-seed と同じ遷移先になるか？ -> なる
+                            // デフォルトロールは2シードだったが、この代替パスは3シードなので、ここで宛先を計算する必要がある
+                            let inducedAddress = null;
+                            const destTrack = (track === 'A' ? 'B' : 'A');
+                            const destRow = (track === 'A' ? i + 1 : i + 2);
+                            if (destRow < numRolls) { 
+                                inducedAddress = `${destRow + 1}${destTrack}`; 
+                            }
+                            const inducedAddressPrefix = inducedAddress ? `${inducedAddress}) ` : '';
 
                             const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(altConfigStr)}&gachas=${tableGachaIds.join('-')}`;
                             const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${altConfigStr}'; resetAndGenerateTable();`;
