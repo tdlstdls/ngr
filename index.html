@@ -229,111 +229,137 @@
             }
 
             const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
-            window.history.pushState({path: newUrl}, '', newUrl);
+            // ★ 修正: history.pushState を try...catch で囲む
+            try {
+                window.history.pushState({path: newUrl}, '', newUrl);
+            } catch (e) {
+                console.warn("Could not update URL parameters:", e.message);
+                // サンドボックス環境 (blob: や iframe) では pushState が失敗することがある
+                // アプリの実行を継続するためにエラーを無視する
+            }
         }
 
         class Xorshift32 { constructor(seed) { this.seed = (seed >>> 0) || 1; } next() { let x = this.seed; x ^= (x << 13); x ^= (x >>> 17); x ^= (x << 15); this.seed = x >>> 0; return this.seed; } }
 
-        function getCharAndRarity(gachaConfig, seed1, seed2) {
-            if (!gachaConfig) return { name: "N/A", rarity: null, id: null };
-            const rarityRoll = seed1 % 10000;
-            const rates = gachaConfig.rarity_rates || {};
-            const rareRate = rates.rare || 0, superRate = rates.super || 0, uberRate = rates.uber || 0, legendRate = rates.legend || 0;
-            let currentRarity;
-            if (rarityRoll < rareRate) { currentRarity = 'rare'; } 
-            else if (rarityRoll < rareRate + superRate) { currentRarity = 'super'; } 
-            else if (rarityRoll < rareRate + superRate + uberRate) { currentRarity = 'uber'; } 
-            else if (rarityRoll < rareRate + superRate + uberRate + legendRate) { currentRarity = 'legend'; } 
-            else { currentRarity = 'rare'; }
+        
+        /**
+         * 固定シード配列と開始インデックスを用いてガチャを一回実行し、シード消費を含む詳細を返す
+         * @param {number} startIndex - seeds配列の開始インデックス
+         * @param {object} gachaConfig - ガチャ設定
+         * @param {number[]} seeds - 全シード値の配列
+         * @param {object} lastDrawInfo - 直前のドロー情報 ({rarity, charId})
+         * @returns {object} - ロール結果の詳細
+         */
+        function rollWithSeedConsumptionFixed(startIndex, gachaConfig, seeds, lastDrawInfo) {
+            if (startIndex + 1 >= seeds.length) return { seedsConsumed: 0, finalChar: { name: "データ不足", id: null }, originalChar: null, isRerolled: false, rarity: null, charId: null, s0: null, s1: null, s2: null };
             
-            const characterPool = gachaConfig.pool[currentRarity] || [];
-            if (characterPool.length === 0) return { name: "該当なし", rarity: currentRarity, id: null };
-            
-            const character = characterPool[seed2 % characterPool.length];
-            return { ...character, rarity: currentRarity };
-        }
+            // S0, S1, S2 are seeds[startIndex], seeds[startIndex+1], seeds[startIndex+2]
+            const s0_seed = seeds[startIndex];
+            const s1_seed = seeds[startIndex + 1];
 
-        function rollWithSeedConsumption(rng, gachaConfig, lastDrawInfo) {
-            const s0_seed = rng.next();
+            // Rarity Roll (based on S0)
             const rarityRoll = s0_seed % 10000;
             const rates = gachaConfig.rarity_rates || {};
             const rareRate = rates.rare || 0, superRate = rates.super || 0, uberRate = rates.uber || 0, legendRate = rates.legend || 0;
             let currentRarity;
             if (rarityRoll < rareRate) { currentRarity = 'rare'; } else if (rarityRoll < rareRate + superRate) { currentRarity = 'super'; } else if (rarityRoll < rareRate + superRate + uberRate) { currentRarity = 'uber'; } else if (rarityRoll < rareRate + superRate + uberRate + legendRate) { currentRarity = 'legend'; } else { currentRarity = 'rare'; }
+            
             const characterPool = gachaConfig.pool[currentRarity] || [];
-            let s1_seed, s2_seed, charIndex, reRollIndex, totalChars, uniqueTotal, isRerolled = false;
-            totalChars = characterPool.length;
-            if (totalChars === 0) return { s0: s0_seed, rarityRoll, finalChar: { name: "該当なし", id: null }, originalChar: { name: "該当なし", id: null }, isRerolled, rarity: currentRarity, charId: null, charIndex: -1, totalChars: 0, seedsConsumed: 1 };
-            s1_seed = rng.next();
-            charIndex = s1_seed % totalChars;
+            if (characterPool.length === 0) {
+                // s2_seedも返すように修正 (誘発ロジックが参照するため)
+                const s2_seed = (startIndex + 2 < seeds.length) ? seeds[startIndex + 2] : null;
+                return { seedsConsumed: 2, finalChar: { name: "該当なし", id: null }, originalChar: null, isRerolled: false, rarity: currentRarity, charId: null, charIndex: -1, totalChars: 0, s0: s0_seed, s1: s1_seed, s2: s2_seed };
+            }
+            
+            // Character Roll (based on S1)
+            const totalChars = characterPool.length;
+            const charIndex = s1_seed % totalChars;
             let character = characterPool[charIndex];
             const originalChar = character;
             let seedsConsumed = 2;
+            let isRerolled = false;
+            let s2_seed = (startIndex + 2 < seeds.length) ? seeds[startIndex + 2] : null; // s2は常に読み込む
+            let reRollIndex = null;
+            let uniqueTotal = null;
+
             if (currentRarity === 'rare' && lastDrawInfo && lastDrawInfo.rarity === 'rare' && lastDrawInfo.charId === character.id) {
+                // Rare Dupe Check
                 const uniqueRareChars = characterPool.filter(c => c.id !== lastDrawInfo.charId);
                 uniqueTotal = uniqueRareChars.length;
+                
                 if (uniqueTotal > 0) {
-                    s2_seed = rng.next();
+                    // Reroll is possible (3 seeds consumed)
+                    if (s2_seed === null) { // s2 がない場合はデータ不足
+                         return { seedsConsumed: 0, finalChar: { name: "データ不足", id: null }, originalChar: null, isRerolled: false, rarity: null, charId: null, s0: s0_seed, s1: s1_seed, s2: null };
+                    }
+                    
                     reRollIndex = s2_seed % uniqueTotal;
                     character = uniqueRareChars[reRollIndex];
                     isRerolled = true;
                     seedsConsumed = 3;
-                }
+                } 
+                // If uniqueTotal == 0, seedsConsumed remains 2, isRerolled remains false (unavoidable dupe).
             }
-            return { s0: s0_seed, s1: s1_seed, s2: s2_seed, rarityRoll, charIndex, reRollIndex, totalChars, uniqueTotal, finalChar: character, originalChar, isRerolled, rarity: currentRarity, charId: character.id, seedsConsumed };
+            
+            return { 
+                s0: s0_seed, s1: s1_seed, s2: s2_seed, 
+                originalChar: originalChar, 
+                finalChar: character, 
+                isRerolled: isRerolled, 
+                rarity: currentRarity, 
+                charId: character.id, 
+                charIndex: charIndex, 
+                totalChars: totalChars, 
+                uniqueTotal: uniqueTotal,
+                reRollIndex: reRollIndex,
+                seedsConsumed: seedsConsumed 
+            };
         }
 
-        function rollGuaranteedUber(rng, gachaConfig) {
-            const s0_seed = rng.next();
+        function rollGuaranteedUber(startIndex, gachaConfig, seeds) {
+            if (startIndex >= seeds.length) return { seedsConsumed: 0, finalChar: { name: "データ不足", id: null }, originalChar: null, isRerolled: false, rarity: 'uber', charId: null, s0: null };
+
+            const s0_seed = seeds[startIndex];
             const currentRarity = 'uber';
             const characterPool = gachaConfig.pool[currentRarity] || [];
             const totalChars = characterPool.length;
             if (totalChars === 0) {
-                return { s0: s0_seed, finalChar: { name: "該当なし", id: null }, isRerolled: false, rarity: currentRarity, charId: null, charIndex: -1, totalChars: 0, seedsConsumed: 1 };
+                return { seedsConsumed: 1, finalChar: { name: "該当なし", id: null }, originalChar: null, isRerolled: false, rarity: currentRarity, charId: null, charIndex: -1, totalChars: 0, s0: s0_seed };
             }
             const charIndex = s0_seed % totalChars;
             const character = characterPool[charIndex];
-            return { s0: s0_seed, finalChar: character, originalChar: character, isRerolled: false, rarity: currentRarity, charId: character.id, charIndex: charIndex, totalChars: totalChars, seedsConsumed: 1 };
+            return { seedsConsumed: 1, finalChar: character, originalChar: character, isRerolled: false, rarity: currentRarity, charId: character.id, charIndex: charIndex, totalChars: totalChars, s0: s0_seed };
         }
 
+
         function calculateGuaranteedLookahead(startSeedIndex, gachaConfig, allSeeds, initialLastDraw) {
-            if (!gachaConfig || !gachaConfig.pool['uber']) return { name: "N/A", nextSeed: null };
+            if (!gachaConfig || !gachaConfig.pool['uber']) return { name: "N/A", nextSeed: null, nextRollStartSeedIndex: null };
 
             let seedCursor = startSeedIndex;
             let lastDraw = initialLastDraw;
+            let nextSimSeedValue = null;
 
             for (let i = 0; i < 10; i++) {
-                if (seedCursor + 1 >= allSeeds.length) return { name: "N/A", nextSeed: null };
+                if (seedCursor + 1 >= allSeeds.length) return { name: "データ不足", nextSeed: null, nextRollStartSeedIndex: null };
 
-                const s1 = allSeeds[seedCursor];
-                const s2 = allSeeds[seedCursor + 1];
-                const { rarity, id } = getCharAndRarity(gachaConfig, s1, s2);
-
-                if (rarity === 'rare' && lastDraw && lastDraw.rarity === 'rare' && id === lastDraw.charId) {
-                    seedCursor += 3;
-                    if (seedCursor - 1 >= allSeeds.length) return { name: "N/A", nextSeed: null };
-                    const s3 = allSeeds[seedCursor - 1];
-                    const uniqueRareChars = (gachaConfig.pool.rare || []).filter(c => c.id !== lastDraw.charId);
-                    let nextCharId = id;
-                    if (uniqueRareChars.length > 0) {
-                        const newChar = uniqueRareChars[s3 % uniqueRareChars.length];
-                        nextCharId = newChar.id;
-                    }
-                    lastDraw = { rarity: 'rare', charId: nextCharId };
-                } else {
-                    seedCursor += 2;
-                    lastDraw = { rarity, charId: id };
-                }
+                const rollResult = rollWithSeedConsumptionFixed(seedCursor, gachaConfig, allSeeds, lastDraw);
+                if (rollResult.seedsConsumed === 0) return { name: "データ不足", nextSeed: null, nextRollStartSeedIndex: null };
+                
+                seedCursor += rollResult.seedsConsumed;
+                lastDraw = { rarity: rollResult.rarity, charId: rollResult.charId };
             }
 
-            if (seedCursor >= allSeeds.length) return { name: "N/A", nextSeed: null };
-            const guaranteedSeed = allSeeds[seedCursor];
-            const nextSimSeedValue = (seedCursor + 1 < allSeeds.length) ? allSeeds[seedCursor + 1] : null;
+            if (seedCursor >= allSeeds.length) return { name: "データ不足", nextSeed: null, nextRollStartSeedIndex: null };
+            
+            // Guaranteed roll (11th roll is 1-seed roll)
+            const guaranteedRollResult = rollGuaranteedUber(seedCursor, gachaConfig, allSeeds);
+            if (guaranteedRollResult.seedsConsumed === 0) return { name: "データ不足", nextSeed: null, nextRollStartSeedIndex: null };
+            
+            seedCursor += guaranteedRollResult.seedsConsumed;
+            
+            nextSimSeedValue = (seedCursor < allSeeds.length) ? allSeeds[seedCursor] : null;
 
-            const uberPool = gachaConfig.pool['uber'] || [];
-            if (uberPool.length === 0) return { name: "N/A", nextSeed: nextSimSeedValue };
-            const finalChar = uberPool[guaranteedSeed % uberPool.length];
-            return { name: finalChar.name, nextSeed: nextSimSeedValue };
+            return { name: guaranteedRollResult.finalChar.name, nextSeed: nextSimSeedValue, nextRollStartSeedIndex: seedCursor };
         }
 
         function toggleGuaranteedColumn(index) {
@@ -348,6 +374,7 @@
 
         // --- sim-config ヘルパー関数 ---
         function parseSimConfig(configStr) {
+            if (!configStr) return []; // ★ null や '' の場合、空配列を返す
             const configs = [];
             const parts = configStr.split('-');
             for (let i = 0; i < parts.length; i += 2) {
@@ -365,7 +392,12 @@
         function stringifySimConfig(configArr) {
             return configArr.map(c => `${c.id}-${c.rolls}${c.g ? 'g' : ''}`).join('-');
         }
-
+        
+        /**
+         * 最後のロール数を+1するか、11gの場合は次のセグメントを追加する (継続リンク用)
+         * @param {string} configStr - sim-config文字列
+         * @returns {string|null} - 更新されたsim-config文字列
+         */
         function incrementLastRoll(configStr) {
             if (!configStr) return null;
             const configs = parseSimConfig(configStr);
@@ -380,6 +412,214 @@
             }
             return stringifySimConfig(configs);
         }
+
+        /**
+         * 最後のロール数を-1するか、ロール数が1の場合は最後のセグメントを削除する (Rule B: 逆算用)
+         * @param {string} configStr - sim-config文字列
+         * @returns {string|null} - 更新されたsim-config文字列
+         */
+        function decrementLastRollOrRemoveSegment(configStr) {
+            if (!configStr) return null;
+            const configs = parseSimConfig(configStr);
+            if (configs.length === 0) return null;
+
+            const last = configs.pop();
+
+            if (last.g) {
+                // 確定枠からの逆算の場合 (Rule Aの逆算時)
+                if (last.rolls === 11) {
+                    last.rolls = 10;
+                    last.g = false;
+                    configs.push(last);
+                }
+            } else {
+                // 通常抽選からの逆算の場合
+                if (last.rolls > 1) {
+                    last.rolls -= 1;
+                    configs.push(last);
+                }
+                // last.rolls === 1 の場合、セグメントは削除
+            }
+
+            return configs.length > 0 ? stringifySimConfig(configs) : '';
+        }
+
+        /**
+         * 確定枠のリンクを生成するロジック（隣接セルからの生成） (Rule E/確定枠のリンク設定)
+         * @param {string} configStr - 左のセル (通常抽選) のsim-config
+         * @param {string} gachaId - 確定枠のガチャID
+         * @returns {string|null} - 生成された確定枠のsim-config、またはnull
+         */
+        function generateGuaranteedConfig(configStr, gachaId) {
+            if (!configStr) return null;
+
+            const parsed = parseSimConfig(configStr);
+            if (parsed.length === 0) return null;
+            
+            // リンクは左のセルのパラメータを参照し、最後のロール数を-1して...
+            const lastPart = parsed.pop();
+            
+            // 最後のセグメントが通常ロールであり、かつロール数が1以上であること
+            if (!lastPart.g && lastPart.rolls > 0) { 
+                
+                // 通常抽選のロール数を -1 する
+                const newRollsForLastPart = Math.max(0, lastPart.rolls - 1);
+                
+                // 置き換える部分 (10ロール分) のシミュレーション設定を再追加
+                if (newRollsForLastPart > 0) {
+                    lastPart.rolls = newRollsForLastPart;
+                    parsed.push(lastPart);
+                }
+
+                // 続けて当該列のガチャID、11ｇとする
+                parsed.push({ id: gachaId, rolls: 11, g: true });
+                
+                return stringifySimConfig(parsed);
+            }
+            return null;
+        }
+
+        // --- ★ 5. (新規) 回避/誘発ロジック用ヘルパー関数 ---
+
+        /**
+         * i行目のトラックの「代表」リンクを取得する (i-1 や i-2 からの参照用)
+         * @param {Map} cellSimConfigs - デフォルトリンクのMap
+         * @param {string} track - 'A' or 'B'
+         * @param {number} i - 行インデックス
+         * @param {Array} gachaConfigs - ガチャ設定配列
+         * @returns {string|null} - 見つかった最初のsim-config文字列、またはnull
+         */
+        function getBestLink(cellSimConfigs, track, i, gachaConfigs) {
+            if (i < 0) return null;
+            for (const config of gachaConfigs) {
+                const configStr = cellSimConfigs.get(`${track}-${i}-${config.id}`);
+                if (configStr) {
+                    return configStr;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * 誘発ロジック用に、強制的に3シード消費した場合のキャラ名を取得する
+         * @param {object} currentRoll - tableData[i][track][gachaIndex].roll の中身
+         * @param {object} gachaConfig - ガチャ設定
+         * @returns {string|null} - 再抽選後のキャラ名、またはnull
+         */
+        function getForcedRerollName(currentRoll, gachaConfig) {
+            if (!currentRoll || !gachaConfig || currentRoll.rarity !== 'rare' || currentRoll.s2 === null) {
+                return null;
+            }
+            
+            const characterPool = gachaConfig.pool['rare'] || [];
+            const uniqueRareChars = characterPool.filter(c => c.id !== currentRoll.originalChar.id);
+            const uniqueTotal = uniqueRareChars.length;
+            
+            if (uniqueTotal > 0) {
+                const reRollIndex = currentRoll.s2 % uniqueTotal;
+                return uniqueRareChars[reRollIndex].name;
+            }
+            return null;
+        }
+
+
+        /**
+         * (メインロジック) レア被り回避と誘発の代替リンクを計算する
+         * @param {string} track - 'A' or 'B'
+         * @param {number} i - 行インデックス
+         * @param {string} currentGachaId - 現在のガチャID
+         * @param {Array} tableData - 全テーブルデータ
+         * @param {Array} gachaConfigs - ガチャ設定配列
+         * @param {Map} cellSimConfigs - デフォルトリンクのMap
+         * @param {number} newRow1Index - CONTINUEエリアの開始行
+         * @returns {object} - { link: string|null, rerollCharName: string|null }
+         */
+        function checkAvoidanceAndForcing(track, i, currentGachaId, tableData, gachaConfigs, cellSimConfigs, newRow1Index) {
+            // FIXEDエリア (ハイライト) では実行しない
+            if (i < newRow1Index) {
+                return { link: null, rerollCharName: null };
+            }
+
+            const gachaIndex = gachaConfigs.findIndex(c => c.id === currentGachaId);
+            if (gachaIndex === -1 || !tableData[i] || !tableData[i][track][gachaIndex]) {
+                return { link: null, rerollCharName: null };
+            }
+
+            const currentRoll = tableData[i][track][gachaIndex].roll;
+            const isRerolled = currentRoll.isRerolled; // ガチャX単体での判定
+            const originalCharId = currentRoll.originalChar?.id; // originalCharがnullの場合がある
+            const originalRarity = currentRoll.rarity;
+
+            // レア以外は対象外
+            if (originalRarity !== 'rare' || !originalCharId) {
+                return { link: null, rerollCharName: null };
+            }
+
+            for (const otherConfig of gachaConfigs) {
+                const otherGachaId = otherConfig.id;
+                if (otherGachaId === currentGachaId) continue; // 自分自身とは比較しない
+
+                const otherIndex = gachaConfigs.findIndex(c => c.id === otherGachaId);
+                const otherRoll_i = tableData[i][track][otherIndex].roll;
+                const otherRoll_prev = (i > 0) ? tableData[i-1][track][otherIndex].roll : null;
+
+                if (isRerolled) {
+                    // --- 1. レア被り回避 (Avoid Dupe) ---
+                    // (デフォルトが3-seedなので、2-seedになる代替リンク (avoidConfig) を探す)
+
+                    // A. 直前の行(i-1)に違うキャラ(Y)がいる
+                    if (otherRoll_prev && otherRoll_prev.rarity === 'rare' && otherRoll_prev.charId !== originalCharId) {
+                        // [config_i-2] + [Y-1] + [X-1]
+                        // 注: 3シード消費 (A->B または B->A) をまたいだ i-2 の参照は複雑すぎるため、
+                        // i-1 が2シード消費だった場合の i-2 (同一トラック) のみ考慮する。
+                        const prevRoll = (i > 0) ? tableData[i-1][track][gachaIndex].roll : null;
+                        if (prevRoll && prevRoll.seedsConsumed <= 2) {
+                             const prevPrevConfig = getBestLink(cellSimConfigs, track, i - 2, gachaConfigs);
+                             if (prevPrevConfig !== null) {
+                                return { link: stringifySimConfig([...parseSimConfig(prevPrevConfig), {id: otherGachaId, rolls: 1, g: false}, {id: currentGachaId, rolls: 1, g: false}]), rerollCharName: null };
+                             }
+                        }
+                    }
+                    // B. 当該行(i)に違うキャラ(Y)がいる
+                    if (otherRoll_i && otherRoll_i.rarity === 'rare' && otherRoll_i.charId !== originalCharId) {
+                        // [config_i-1] + [Y-1]
+                        const prevConfig = getBestLink(cellSimConfigs, track, i - 1, gachaConfigs);
+                         if (prevConfig !== null) {
+                            return { link: stringifySimConfig([...parseSimConfig(prevConfig), {id: otherGachaId, rolls: 1, g: false}]), rerollCharName: null };
+                         }
+                    }
+                } else {
+                    // --- 2. レア被り誘発 (Force Dupe) ---
+                    // (デフォルトが2-seedなので、3-seedになる代替リンク (forceConfig) を探す)
+                    
+                    // A. 直前の行(i-1)に同じキャラ(Y)がいる
+                    if (otherRoll_prev && otherRoll_prev.rarity === 'rare' && otherRoll_prev.charId === originalCharId) {
+                        // [config_i-2] + [Y-1] + [X-1]
+                        const prevRoll = (i > 0) ? tableData[i-1][track][gachaIndex].roll : null;
+                        if (prevRoll && prevRoll.seedsConsumed <= 2) {
+                            const prevPrevConfig = getBestLink(cellSimConfigs, track, i - 2, gachaConfigs);
+                            if (prevPrevConfig !== null) {
+                                const rerollCharName = getForcedRerollName(currentRoll, gachaConfigs[gachaIndex]);
+                                return { link: stringifySimConfig([...parseSimConfig(prevPrevConfig), {id: otherGachaId, rolls: 1, g: false}, {id: currentGachaId, rolls: 1, g: false}]), rerollCharName: rerollCharName };
+                            }
+                        }
+                    }
+                    // B. 当該行(i)に直前(X, i-1)と同じキャラ(Y)がいる
+                    const prevRoll = (i > 0) ? tableData[i-1][track][gachaIndex].roll : null;
+                    if (prevRoll && prevRoll.rarity === 'rare' && otherRoll_i && otherRoll_i.rarity === 'rare' && otherRoll_i.charId === prevRoll.charId) {
+                         // [config_i-1] + [Y-1]
+                        const prevConfig = getBestLink(cellSimConfigs, track, i - 1, gachaConfigs);
+                        if (prevConfig !== null) {
+                            const rerollCharName = getForcedRerollName(currentRoll, gachaConfigs[gachaIndex]);
+                            return { link: stringifySimConfig([...parseSimConfig(prevConfig), {id: otherGachaId, rolls: 1, g: false}]), rerollCharName: rerollCharName };
+                        }
+                    }
+                }
+            }
+
+            return { link: null, rerollCharName: null };
+        }
+
         // --- ヘルパー関数 終了 ---
 
 
@@ -393,585 +633,358 @@
                     return;
                 }
                 
-                // 3. シード値配列の定義と初期化を関数の最初に移動
+                // 3. シード値配列の定義と初期化
                 const seeds = [];
                 const rngForSeeds = new Xorshift32(initialSeed);
-                for (let i = 0; i < numRolls * 3 + 220; i++) { seeds.push(rngForSeeds.next()); }
+                // 最大のロール回数 * 3 + 20シード分を確保
+                for (let i = 0; i < numRolls * 3 + 20; i++) { seeds.push(rngForSeeds.next()); }
 
                 // 1. sim-config の処理
                 const simConfigInput = document.getElementById('sim-config').value.trim();
                 let simConfigs = [];
-                let simGachaIds = new Set(); // ハイライト対象のガチャID
-                let baseConfig = simConfigInput; // リンク計算のベース
-
+                
                 if (simConfigInput) {
                     simConfigs = parseSimConfig(simConfigInput);
                     simConfigs.forEach(sim => {
-                        simGachaIds.add(sim.id);
+                        // ガチャマスターから設定を読み込む
                         if (gachaMasterData.gachas[sim.id]) {
                             sim.gachaConfig = gachaMasterData.gachas[sim.id];
                         }
-                        
-                        // --- 確定列の重複表示を防ぐ修正 ---
+
                         const gachaIdInTable = sim.g ? `${sim.id}g` : sim.id;
-                        
                         const hasGuaranteed = tableGachaIds.includes(`${sim.id}g`);
 
                         if (!tableGachaIds.includes(gachaIdInTable)) {
                             if (sim.g) {
-                                // XXXg を追加する場合、XXX があっても追加する。
                                 tableGachaIds.push(gachaIdInTable);
                             } else {
-                                // XXX を追加する場合、XXXg がなければ追加する。
                                 if (!hasGuaranteed) {
                                     tableGachaIds.push(gachaIdInTable);
                                 }
                             }
                         }
-                        // --- 修正箇所 終了 ---
-
                     });
-                } else if (tableGachaIds.length > 0) {
-                    // sim-config がブランクの場合、先頭ガチャで 100回シミュ
-                    const firstGachaId = tableGachaIds[0].replace('g', '');
-                    if (gachaMasterData.gachas[firstGachaId]) {
-                        const defaultSimStr = `${firstGachaId}-100`;
-                        simConfigs = parseSimConfig(defaultSimStr);
-                        simConfigs[0].gachaConfig = gachaMasterData.gachas[firstGachaId];
-                        simGachaIds.add(firstGachaId);
-                    }
-                    baseConfig = ''; // ブランク時はベースもブランク
                 }
                 
-                // gachaConfigs を tableGachaIds のユニーク順に合わせる
                 const uniqueGachaIds = [...new Set(tableGachaIds.map(id => id.replace('g', '')))];
                 const gachaConfigs = uniqueGachaIds.map(id => gachaMasterData.gachas[id]).filter(Boolean);
 
 
                 // 2. シミュレーション実行 (ハイライトと計算過程のため)
+                const highlightMap = new Map(); // key 'row-track' or 'row-trackG' -> 'gachaId'
                 const simulationResults = [];
-                const highlightMap = new Map(); // key 'row-track' -> 'gachaId'
-                let anchorInfo = null;
                 
-                const rngForText = new Xorshift32(initialSeed);
-                let lastDrawForText = { rarity: null, charId: null };
-
-                let seedCursor = 0;
+                let rngForText = new Xorshift32(initialSeed);
+                let currentSeedIndex = 0;
                 let lastDrawForHighlight = { rarity: null, charId: null };
+                let pathDetails = []; // ハイライトされた通常抽選セルの {row, track, id} を格納
                 let totalSimRolls = 0;
-                let lastSimRow = -1; // 0-indexed
 
                 if (simConfigs.length > 0) {
                     for (const sim of simConfigs) {
                         if (!sim.gachaConfig) continue; 
 
-                        if (sim.g && sim.rolls === 11) {
-                            // 11連確定
-                            if (!anchorInfo) { 
-                                anchorInfo = { row: Math.floor(seedCursor / 2), track: (seedCursor % 2 === 0) ? 'A' : 'B', gachaId: sim.id };
-                            }
-                            for (let i = 0; i < 10; i++) {
-                                if (seedCursor + 1 >= seeds.length) break;
+                        const isGuaranteedPath = sim.g && sim.rolls === 11;
+                        
+                        // 確定枠を含む11連
+                        if (isGuaranteedPath) {
+                            const startTrack = (currentSeedIndex % 2 === 0) ? 'A' : 'B'; 
+                            const startRow = Math.floor(currentSeedIndex / 2);
 
-                                const row = Math.floor(seedCursor / 2);
-                                const track = (seedCursor % 2 === 0) ? 'A' : 'B';
+                            for (let i = 0; i < 10; i++) {
+                                const row = Math.floor(currentSeedIndex / 2);
+                                const track = (currentSeedIndex % 2 === 0) ? 'A' : 'B';
                                 if (row >= numRolls) break;
                                 
-                                lastSimRow = row; // 10回目のロールまでハイライト
                                 highlightMap.set(`${row}-${track}`, sim.id);
                                 
-                                const s1 = seeds[seedCursor];
-                                const s2 = seeds[seedCursor + 1];
-                                const { rarity, id } = getCharAndRarity(sim.gachaConfig, s1, s2);
+                                const rollResult = rollWithSeedConsumptionFixed(currentSeedIndex, sim.gachaConfig, seeds, lastDrawForHighlight);
+                                if (rollResult.seedsConsumed === 0) break;
                                 
-                                let seedsConsumed = 2;
-                                if (rarity === 'rare' && lastDrawForHighlight.rarity === 'rare' && id === lastDrawForHighlight.charId) {
-                                    seedsConsumed = 3;
-                                }
-                                lastDrawForHighlight = { rarity, charId: id };
-                                seedCursor += seedsConsumed;
+                                pathDetails.push({ row, track, id: sim.id });
+                                
+                                lastDrawForHighlight = { rarity: rollResult.rarity, charId: rollResult.charId };
+                                currentSeedIndex += rollResult.seedsConsumed;
 
-                                const resultForText = rollWithSeedConsumption(rngForText, sim.gachaConfig, lastDrawForText);
-                                simulationResults.push({ ...sim, result: resultForText, track: track, isGuaranteed: false, rollNum: ++totalSimRolls });
-                                lastDrawForText = resultForText;
+                                for(let k = 0; k < rollResult.seedsConsumed; k++) rngForText.next(); 
+                                simulationResults.push({ ...sim, result: rollResult, track: track, isGuaranteed: false, rollNum: ++totalSimRolls });
                             }
-                            // 11回目（確定）
-                            const row = Math.floor(seedCursor / 2);
-                            const track = (seedCursor % 2 === 0) ? 'A' : 'B';
                             
-                            // 確定ロール自体はハイライトしないが、次のロールの開始位置を設定するために lastSimRow は更新する
-                            lastSimRow = row; 
-                            // highlightMap.set(`${row}-${track}-G`, sim.id); // <--- この行を削除/スキップ
+                            // 11回目（確定）
+                            if (startRow < numRolls) {
+                                highlightMap.set(`${startRow}-${startTrack}G`, sim.id); 
+                            }
 
-                            const guaranteedResult = rollGuaranteedUber(rngForText, sim.gachaConfig);
-                            simulationResults.push({ ...sim, result: guaranteedResult, track: track, isGuaranteed: true, rollNum: ++totalSimRolls });
-                            lastDrawForText = guaranteedResult; 
-                            seedCursor += 1; 
+                            if (currentSeedIndex >= seeds.length) continue;
+                            const guaranteedResult = rollGuaranteedUber(currentSeedIndex, sim.gachaConfig, seeds);
+                            
+                            currentSeedIndex += guaranteedResult.seedsConsumed;
+                            for(let k = 0; k < guaranteedResult.seedsConsumed; k++) rngForText.next(); 
+
+                            simulationResults.push({ ...sim, result: guaranteedResult, track: startTrack, isGuaranteed: true, rollNum: ++totalSimRolls });
                             
                         } else {
                             // 通常ロール
                             for (let i = 0; i < sim.rolls; i++) {
-                                const row = Math.floor(seedCursor / 2);
-                                const track = (seedCursor % 2 === 0) ? 'A' : 'B';
+                                const row = Math.floor(currentSeedIndex / 2);
+                                const track = (currentSeedIndex % 2 === 0) ? 'A' : 'B';
                                 if (row >= numRolls) break;
-                                lastSimRow = row;
+
                                 highlightMap.set(`${row}-${track}`, sim.id);
 
-                                const s1 = seeds[seedCursor];
-                                const s2 = seeds[seedCursor + 1];
-                                const { rarity, id } = getCharAndRarity(sim.gachaConfig, s1, s2);
+                                const rollResult = rollWithSeedConsumptionFixed(currentSeedIndex, sim.gachaConfig, seeds, lastDrawForHighlight);
+                                if (rollResult.seedsConsumed === 0) break;
 
-                                let seedsConsumed = 2;
-                                if (rarity === 'rare' && lastDrawForHighlight.rarity === 'rare' && id === lastDrawForHighlight.charId) {
-                                    seedsConsumed = 3;
-                                }
-                                lastDrawForHighlight = { rarity, charId: id };
-                                seedCursor += seedsConsumed;
+                                pathDetails.push({ row, track, id: sim.id });
 
-                                const resultForText = rollWithSeedConsumption(rngForText, sim.gachaConfig, lastDrawForText);
-                                simulationResults.push({ ...sim, result: resultForText, track: track, isGuaranteed: false, rollNum: ++totalSimRolls });
-                                lastDrawForText = resultForText;
+                                lastDrawForHighlight = { rarity: rollResult.rarity, charId: rollResult.charId };
+                                currentSeedIndex += rollResult.seedsConsumed;
+
+                                for(let k = 0; k < rollResult.seedsConsumed; k++) rngForText.next(); 
+                                simulationResults.push({ ...sim, result: rollResult, track: track, isGuaranteed: false, rollNum: ++totalSimRolls });
                             }
                         }
                     }
                 }
                 finalSeedForUpdate = rngForText.seed;
                 
-                // 3. テーブルデータとレア被りマップの準備
+                // 3. テーブルデータと全ロール結果の準備
                 const tableData = Array(numRolls).fill(null).map(() => ({ A: [], B: [] }));
-                const rerollMap = new Map(); // key 'A-i-id' -> bool
                 
-                function isRareDupe(cell, prevCell) {
-                    if (!cell || !prevCell || !cell.char || !prevCell.char) return false;
-                    return cell.rarity === 'rare' && prevCell.rarity === 'rare' && cell.char.id === prevCell.char.id;
-                }
-
-                gachaConfigs.forEach((config, gachaIndex) => { // gachaIndex を使用
+                gachaConfigs.forEach((config, gachaIndex) => {
                     if (!config) return;
-                    let prevCellA = null;
-                    let prevCellB = null;
+                    let prevDrawA = { rarity: null, charId: null };
+                    let prevDrawB = { rarity: null, charId: null };
 
                     for (let i = 0; i < numRolls; i++) {
-                        if ((2 * i + 2) >= seeds.length) break; 
-                        const charA = getCharAndRarity(config, seeds[2 * i], seeds[2 * i + 1]);
-                        const cellA = { gachaId: config.id, char: charA, rarity: charA.rarity };
-                        tableData[i].A[gachaIndex] = cellA; // gachaIndex を使用
-                        rerollMap.set(`A-${i}-${config.id}`, isRareDupe(cellA, prevCellA));
-                        prevCellA = cellA;
+                        // --- Track A ---
+                        const rollResultA = rollWithSeedConsumptionFixed(i * 2, config, seeds, prevDrawA);
+                        tableData[i].A[gachaIndex] = { gachaId: config.id, roll: rollResultA };
+                        prevDrawA = { rarity: rollResultA.rarity, charId: rollResultA.charId };
 
-                        const charB = getCharAndRarity(config, seeds[2 * i + 1], seeds[2 * i + 2]);
-                        const cellB = { gachaId: config.id, char: charB, rarity: charB.rarity };
-                        tableData[i].B[gachaIndex] = cellB; // gachaIndex を使用
-                        rerollMap.set(`B-${i}-${config.id}`, isRareDupe(cellB, prevCellB));
-                        prevCellB = cellB;
+                        // --- Track B ---
+                        const rollResultB = rollWithSeedConsumptionFixed(i * 2 + 1, config, seeds, prevDrawB);
+                        tableData[i].B[gachaIndex] = { gachaId: config.id, roll: rollResultB };
+                        prevDrawB = { rarity: rollResultB.rarity, charId: rollResultB.charId };
+                        
+                        if (i * 2 + 3 >= seeds.length) break; 
                     }
                 });
 
 
-                // 4. リンク(sim-config)マップの計算
-                const cellSimConfigs = new Map(); // key 'A-i-id' -> "sim-config-string" or null
+                // 4. リンク(sim-config)マップの計算 (ハイライト/非ハイライト統合)
                 
-                // --- 継続の開始位置を正確に計算 ---
-                let startSeedIndex = seedCursor;
+                const cellSimConfigs = new Map(); // key 'A-i-id' -> "sim-config-string" (デフォルトリンク)
+                // ★ 新規: 代替リンク (回避/誘発) を保存するMap
+                const cellSimConfigs_Alt = new Map(); // key 'A-i-id' -> { link: string, rerollCharName: string|null }
+                
+                
+                // --- (A) ハイライトの終点（新しい開始点）を特定 ---
+                let startSeedIndex = currentSeedIndex; // 'currentSeedIndex' はシミュレーション(2.)で計算済み
                 let startRow = Math.floor(startSeedIndex / 2);
                 let startTrack = (startSeedIndex % 2 === 0) ? 'A' : 'B';
                 let newRow1Index = startRow; 
-                
-                if (baseConfig === '') {
+                let baseConfig = simConfigInput; // sim-config入力値をベースとして使う
+
+                if (simConfigInput === '') {
+                    // sim-configが空（ハイライトなし）の場合、0行目Aからスタート
                     newRow1Index = 0;
-                    startTrack = 'A'; // 最初は必ずAから
+                    startTrack = 'A';
                 }
-                // --- 修正 終了 ---
 
-                // --- ▼▼▼ 修正ブロック (1)～(11) 実装 ▼▼▼ ---
-                for (let i = 0; i < numRolls; i++) {
+                // === ローカルヘルパー関数定義 (両方の分岐で利用) ===
+                const getCellDataFull = (track, row, gachaId) => {
+                    const key = `${track}-${row}-${gachaId}`;
+                    const gachaIndex = gachaConfigs.findIndex(c => c.id === gachaId);
 
-                    // (3)(4)(8)(10) のための行データ (i-1, i-2, i-3) を準備
-                    const rowData = (gachaId) => {
-                        const gachaIndex = gachaConfigs.findIndex(c => c.id === gachaId);
-                        if (gachaIndex === -1) return { config_prev: null, config_prev2: null, config_prev3: null, cell_prev: null, cell_prev2: null, isReroll_prev: false, isRare_prev: false };
-                        const cell_prev = (i > 0) ? tableData[i-1].A[gachaIndex] : null;
-                        return {
-                            config_prev: (i > 0) ? cellSimConfigs.get(`A-${i-1}-${gachaId}`) : null,
-                            config_prev2: (i > 1) ? cellSimConfigs.get(`A-${i-2}-${gachaId}`) : null,
-                            config_prev3: (i > 2) ? cellSimConfigs.get(`A-${i-3}-${gachaId}`) : null,
-                            cell_prev: cell_prev,
-                            cell_prev2: (i > 1) ? tableData[i-2].A[gachaIndex] : null,
-                            isReroll_prev: rerollMap.get(`A-${i-1}-${gachaId}`), // (i-1)が(i-2)と被ったか
-                            isRare_prev: cell_prev && cell_prev.rarity === 'rare',
-                        };
+                    if (row < 0 || row >= numRolls || gachaIndex === -1 || !tableData[row] || !tableData[row][track][gachaIndex]) {
+                        return { config: cellSimConfigs.get(key) || null, roll: null, seedsConsumed: 0 };
+                    }
+                    
+                    const roll = tableData[row][track][gachaIndex].roll;
+                    return {
+                        config: cellSimConfigs.get(key) || null,
+                        roll: roll,
+                        seedsConsumed: roll.seedsConsumed,
                     };
-                    const rowDataB = (gachaId) => {
-                        const gachaIndex = gachaConfigs.findIndex(c => c.id === gachaId);
-                        if (gachaIndex === -1) return { config_prev: null, config_prev2: null, config_prev3: null, cell_prev: null, cell_prev2: null, isReroll_prev: false, isRare_prev: false };
-                        const cell_prev = (i > 0) ? tableData[i-1].B[gachaIndex] : null;
-                        return {
-                            config_prev: (i > 0) ? cellSimConfigs.get(`B-${i-1}-${gachaId}`) : null,
-                            config_prev2: (i > 1) ? cellSimConfigs.get(`B-${i-2}-${gachaId}`) : null,
-                            config_prev3: (i > 2) ? cellSimConfigs.get(`B-${i-3}-${gachaId}`) : null,
-                            cell_prev: cell_prev,
-                            cell_prev2: (i > 1) ? tableData[i-2].B[gachaIndex] : null,
-                            isReroll_prev: rerollMap.get(`B-${i-1}-${gachaId}`),
-                            isRare_prev: cell_prev && cell_prev.rarity === 'rare',
-                        };
-                    };
+                };
+                
+                const getPrevData = (track, i, gachaId) => getCellDataFull(track, i - 1, gachaId);
+                const getPrevPrevCrossTrackData = (crossTrack, i, gachaId) => getCellDataFull(crossTrack, i - 2, gachaId);
+                // === ローカルヘルパー関数定義 終了 ===
 
+
+                // --- (C) ハイライト部分のリンクを逆算ロジックで上書き (FIXEDエリア) ---
+                // ★★★ 修正: (B)よりも先に(C)を実行する ★★★
+                if (pathDetails.length > 0) {
+                    const lastStep = pathDetails[pathDetails.length - 1];
+                    
+                    // Rule A: 一番下にあるハイライトされた通常抽選セルのリンクを設定
+                    let lastHighlightedConfig = simConfigInput;
+                    if (simConfigInput.endsWith('g')) {
+                        const parsed = parseSimConfig(simConfigInput);
+                        const lastPart = parsed.pop();
+                        if (lastPart && lastPart.g && lastPart.rolls === 11) {
+                            lastPart.rolls = 10;
+                            lastPart.g = false;
+                            parsed.push(lastPart);
+                            lastHighlightedConfig = stringifySimConfig(parsed);
+                        }
+                    }
+                    
+                    // 設定 (上書き)
+                    cellSimConfigs.set(`${lastStep.track}-${lastStep.row}-${lastStep.id}`, lastHighlightedConfig);
+                    
+                    // Rule B: 1行ずつ上に遡ってパラメーターを設定 (上書き)
+                    for (let i = pathDetails.length - 2; i >= 0; i--) {
+                        const currentStep = pathDetails[i];
+                        const nextStep = pathDetails[i + 1];
+
+                        const nextConfigStr = cellSimConfigs.get(`${nextStep.track}-${nextStep.row}-${nextStep.id}`);
+                        const currentConfigStr = decrementLastRollOrRemoveSegment(nextConfigStr);
+                        
+                        cellSimConfigs.set(`${currentStep.track}-${currentStep.row}-${currentStep.id}`, currentConfigStr);
+                    }
+                    
+                    // Rule D (仕様書) / Rule C (コードコメント): ハイライトと同じトラックの非主軸セル
+                    gachaConfigs.forEach(config => {
+                        pathDetails.forEach(step => {
+                            // ★ 修正: config.id と step.id (その行の主軸ID) を比較
+                            if (config.id === step.id) return; // この行の主軸セルなのでスキップ
+
+                            // if (step.track === primaryTrack) { // ★ 修正: このチェックは不要
+                                const i = step.row;
+                                const cellKey = `${step.track}-${i}-${config.id}`; // これから設定するセル
+                                
+                                const primaryCellKey = `${step.track}-${i}-${step.id}`; // FIX
+                                
+                                const primaryConfigStr = cellSimConfigs.get(primaryCellKey);
+                                
+                                // ★ 修正: primaryConfigStr が '' (空文字) の場合も考慮
+                                if (primaryConfigStr === '' || primaryConfigStr === null || typeof primaryConfigStr === 'undefined') {
+                                    // 主軸セルがリンクなし ('' or null) なら、他も null
+                                    cellSimConfigs.set(cellKey, null);
+                                } else {
+                                    // 主軸セルにリンクがある
+                                    let newConfig = parseSimConfig(primaryConfigStr);
+                                    if (newConfig.length > 0) {
+                                        newConfig[newConfig.length - 1].id = config.id;
+                                        cellSimConfigs.set(cellKey, stringifySimConfig(newConfig));
+                                    } else {
+                                        cellSimConfigs.set(cellKey, null);
+                                    }
+                                }
+                            // } // ★ 修正: 閉じカッコ
+                        });
+                    });
+                    
+                    // Rule C (仕様書) / Rule D/F (コードコメント): 反対側トラックのセルはリンクなし
+                    // ★ 修正: pathDetails に含まれるトラックの種類を確認
+                    const tracksInPath = [...new Set(pathDetails.map(step => step.track))];
+                    
+                    if (tracksInPath.length === 1) {
+                        // パスが単一トラックにのみ存在する場合 (トラック移動がなかった場合)
+                        const primaryTrack = tracksInPath[0];
+                        const oppositeTrack = (primaryTrack === 'A') ? 'B' : 'A';
+                        
+                        const highlightedRows = [...new Set(pathDetails.map(step => step.row))];
+
+                        highlightedRows.forEach(row => {
+                             gachaConfigs.forEach(config => {
+                                 cellSimConfigs.set(`${oppositeTrack}-${row}-${config.id}`, null);
+                             });
+                        });
+                    }
+                    // ★ tracksInPath.length > 1 の場合 (トラック移動があった場合)、
+                    // 両方のトラックにハイライトセルが存在するため、
+                    // Rule C (反対側トラックを null にする) は実行しない。
+                    // (Rule D が両方のトラックの非主軸セルを正しく設定する)
+                }
+                // --- (C) FIXEDエリアのリンク設定 終了 ---
+
+
+                // --- (B) 継続リンクの生成 (CONTINUEエリア) ---
+                // (newRow1Index 以降の行に、継続リンク生成ロジックを適用)
+                // ★ 修正: ループの開始を newRow1Index に変更
+                for (let i = newRow1Index; i < numRolls; i++) {
                     gachaConfigs.forEach(config => {
                         const id = config.id;
-                        const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
+                        
                         let configA = null;
                         let configB = null;
 
-                        if (i < newRow1Index) {
-                            // --- FIXされた行 ---
-                            if (i === 0) {
-                                configA = `${id}-1`;
-                                configB = null;
-                            } else {
-                                // (i > 0)
-                                // "新しい2行目" 以降 と同じロジックを適用
-                                const dataA = rowData(id);
-                                const dataB = rowDataB(id);
-
-                                // (3)(4)(8)(10) のための「他ガチャ」スキャン (Aトラック用)
-                                const findOtherGachaA_prev = () => {
-                                    if (!dataA.cell_prev) return null;
-                                    for (let j = 0; j < gachaConfigs.length; j++) {
-                                        if (gachaConfigs[j].id === id) continue;
-                                        const otherCell = tableData[i-1].A[j];
-                                        if (otherCell && otherCell.char.id !== dataA.cell_prev.char.id) {
-                                            return gachaConfigs[j].id;
-                                        }
-                                    } return null;
-                                };
-                                const findOtherGachaA_prev2 = () => {
-                                    if (!dataA.cell_prev2) return null;
-                                    for (let j = 0; j < gachaConfigs.length; j++) {
-                                        if (gachaConfigs[j].id === id) continue;
-                                        const otherCell = tableData[i-2].A[j];
-                                        if (otherCell && otherCell.char.id !== dataA.cell_prev2.char.id) {
-                                            return gachaConfigs[j].id;
-                                        }
-                                    } return null;
-                                };
-                                const findSameCharGachaB_prev = (baseCell) => {
-                                    if (!baseCell || baseCell.rarity !== 'rare') return null;
-                                    for (let j = 0; j < gachaConfigs.length; j++) {
-                                        if (gachaConfigs[j].id === id) continue; 
-                                        const otherCell = tableData[i-1].B[j]; 
-                                        if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
-                                            return gachaConfigs[j].id;
-                                        }
-                                    } return null;
-                                };
-                                const findSameCharGachaB_prev2 = (baseCell) => {
-                                    if (!baseCell || baseCell.rarity !== 'rare') return null;
-                                    for (let j = 0; j < gachaConfigs.length; j++) {
-                                        const otherCell = tableData[i-2].B[j]; 
-                                        if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
-                                            return gachaConfigs[j].id;
-                                        }
-                                    } return null;
-                                };
-                                
-                                // (3)(4)(8)(10) のための「他ガチャ」スキャン (Bトラック用)
-                                const findOtherGachaB_prev = () => {
-                                    if (!dataB.cell_prev) return null;
-                                    for (let j = 0; j < gachaConfigs.length; j++) {
-                                        if (gachaConfigs[j].id === id) continue;
-                                        const otherCell = tableData[i-1].B[j];
-                                        if (otherCell && otherCell.char.id !== dataB.cell_prev.char.id) {
-                                            return gachaConfigs[j].id;
-                                        }
-                                    } return null;
-                                };
-                                const findOtherGachaB_prev2 = () => {
-                                    if (!dataB.cell_prev2) return null;
-                                    for (let j = 0; j < gachaConfigs.length; j++) {
-                                        if (gachaConfigs[j].id === id) continue;
-                                        const otherCell = tableData[i-2].B[j];
-                                        if (otherCell && otherCell.char.id !== dataB.cell_prev2.char.id) {
-                                            return gachaConfigs[j].id;
-                                        }
-                                    } return null;
-                                };
-                                const findSameCharGachaA_prev = (baseCell) => {
-                                    if (!baseCell || baseCell.rarity !== 'rare') return null;
-                                    for (let j = 0; j < gachaConfigs.length; j++) {
-                                        if (gachaConfigs[j].id === id) continue; 
-                                        const otherCell = tableData[i-1].A[j]; 
-                                        if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
-                                            return gachaConfigs[j].id;
-                                        }
-                                    } return null;
-                                };
-                                const findSameCharGachaA_prev2 = (baseCell) => {
-                                    if (!baseCell || baseCell.rarity !== 'rare') return null;
-                                    for (let j = 0; j < gachaConfigs.length; j++) {
-                                        const otherCell = tableData[i-2].A[j]; 
-                                        if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
-                                            return gachaConfigs[j].id;
-                                        }
-                                    } return null;
-                                };
-
-                                // A-i Logic (FIXED)
-                                if (dataA.config_prev) { // A-(i-1) リンクあり
-                                    if (!dataA.isRare_prev) { configA = incrementLastRoll(dataA.config_prev); } // (1)
-                                    else { // レア
-                                        if (!dataA.isReroll_prev) { configA = incrementLastRoll(dataA.config_prev); } // (2)
-                                        else { // (3)-(5) レア被り
-                                            const otherGachaId1 = findOtherGachaA_prev();
-                                            if (otherGachaId1 && dataA.config_prev2) { configA = `${dataA.config_prev2}-${otherGachaId1}-1-${id}-1`; } // (3)
-                                            else {
-                                                const otherGachaId2 = findOtherGachaA_prev2();
-                                                if (otherGachaId2 && dataA.config_prev3) { configA = `${dataA.config_prev3}-${otherGachaId2}-1-${id}-2`; } // (4)
-                                                else { configA = null; } // (5)
-                                            }
-                                        }
-                                    }
-                                } 
-                                if (!configA && dataA.config_prev === null) { // A-(i-1) リンクなし、または (5)
-                                    const dataB_forA = dataB; // rowDataB(id);
-                                    if (dataB_forA.config_prev) { // B-(i-1) にリンクがある場合
-                                        if (!dataB_forA.isRare_prev) { // (6)(7)(8) 
-                                            const otherGachaId1_B = findSameCharGachaB_prev(dataB_forA.cell_prev); // (7)
-                                            if (otherGachaId1_B) {
-                                                const otherGachaId2_B = findSameCharGachaB_prev2(dataB_forA.cell_prev); // (8)
-                                                if (otherGachaId2_B && dataB_forA.config_prev3) { configA = `${dataB_forA.config_prev3}-${otherGachaId2_B}-1-${otherGachaId1_B}-1-${id}-1`; } // (8)
-                                                else { configA = null; } // (7)
-                                            } else { configA = null; } // (6)
-                                        } else { // B-(i-1) がレア
-                                            if (dataB_forA.isReroll_prev) { configA = incrementLastRoll(dataB_forA.config_prev); } // (9)
-                                            else { // (10)(11)
-                                                const otherGachaId1_B_same = findSameCharGachaB_prev(dataB_forA.cell_prev); // (10)
-                                                if (otherGachaId1_B_same && dataB_forA.config_prev3) { configA = `${dataB_forA.config_prev3}-${otherGachaId1_B_same}-1-${id}-1`; } // (10)
-                                                else { configA = null; } // (11)
-                                            }
-                                        }
-                                    } else { configA = null; }
-                                }
-                                
-                                // B-i Logic (FIXED)
-                                if (dataB.config_prev) { // B-(i-1) リンクあり
-                                    if (!dataB.isRare_prev) { configB = incrementLastRoll(dataB.config_prev); } // (1)
-                                    else { // レア
-                                        if (!dataB.isReroll_prev) { configB = incrementLastRoll(dataB.config_prev); } // (2)
-                                        else { // (3)-(5) レア被り
-                                            const otherGachaId1 = findOtherGachaB_prev();
-                                            if (otherGachaId1 && dataB.config_prev2) { configB = `${dataB.config_prev2}-${otherGachaId1}-1-${id}-1`; } // (3)
-                                            else {
-                                                const otherGachaId2 = findOtherGachaB_prev2();
-                                                if (otherGachaId2 && dataB.config_prev3) { configB = `${dataB.config_prev3}-${otherGachaId2}-1-${id}-2`; } // (4)
-                                                else { configB = null; } // (5)
-                                            }
-                                        }
-                                    }
-                                }
-                                if (!configB && dataB.config_prev === null) { // B-(i-1) リンクなし、または (5)
-                                    const dataA_forB = dataA; // rowData(id);
-                                    if (dataA_forB.config_prev) { // A-(i-1) にリンクがある場合
-                                        if (!dataA_forB.isRare_prev) { // (6)(7)(8) 
-                                            const otherGachaId1_A = findSameCharGachaA_prev(dataA_forB.cell_prev); // (7)
-                                            if (otherGachaId1_A) {
-                                                const otherGachaId2_A = findSameCharGachaA_prev2(dataA_forB.cell_prev); // (8)
-                                                if (otherGachaId2_A && dataA_forB.config_prev3) { configB = `${dataA_forB.config_prev3}-${otherGachaId2_A}-1-${otherGachaId1_A}-1-${id}-1`; } // (8)
-                                                else { configB = null; } // (7)
-                                            } else { configB = null; } // (6)
-                                        } else { // A-(i-1) がレア
-                                            if (dataA_forB.isReroll_prev) { configB = incrementLastRoll(dataA_forB.config_prev); } // (9)
-                                            else { // (10)(11)
-                                                const otherGachaId1_A_same = findSameCharGachaA_prev(dataA_forB.cell_prev); // (10)
-                                                if (otherGachaId1_A_same && dataA_forB.config_prev3) { configB = `${dataA_forB.config_prev3}-${otherGachaId1_A_same}-1-${id}-1`; } // (10)
-                                                else { configB = null; } // (11)
-                                            }
-                                        }
-                                    } else { configB = null; }
-                                }
-                            }
-                        } else if (i === newRow1Index) {
+                        if (i === newRow1Index) {
                             // --- "新しい1行目" (FIX & Continueの開始点) ---
+                            // (C)で設定されたかもしれない値を上書きする
                             if (startTrack === 'A') {
                                 configA = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
-                                configB = null; 
+                                configB = null; // 反対側はクリア
                             } else { // startTrack === 'B'
-                                configA = null; 
+                                configA = null; // 反対側はクリア
                                 configB = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
                             }
                         } else {
-                            // --- "新しい2行目" 以降 ---
-                            // (i > 0)
-                            // "新しい2行目" 以降 と同じロジックを適用
-                            const dataA = rowData(id);
-                            const dataB = rowDataB(id);
-
-                            // (3)(4)(8)(10) のための「他ガチャ」スキャン (Aトラック用)
-                            const findOtherGachaA_prev = () => {
-                                if (!dataA.cell_prev) return null;
-                                for (let j = 0; j < gachaConfigs.length; j++) {
-                                    if (gachaConfigs[j].id === id) continue;
-                                    const otherCell = tableData[i-1].A[j];
-                                    if (otherCell && otherCell.char.id !== dataA.cell_prev.char.id) {
-                                        return gachaConfigs[j].id;
-                                    }
-                                } return null;
-                            };
-                            const findOtherGachaA_prev2 = () => {
-                                if (!dataA.cell_prev2) return null;
-                                for (let j = 0; j < gachaConfigs.length; j++) {
-                                    if (gachaConfigs[j].id === id) continue;
-                                    const otherCell = tableData[i-2].A[j];
-                                    if (otherCell && otherCell.char.id !== dataA.cell_prev2.char.id) {
-                                        return gachaConfigs[j].id;
-                                    }
-                                } return null;
-                            };
-                            const findSameCharGachaB_prev = (baseCell) => {
-                                if (!baseCell || baseCell.rarity !== 'rare') return null;
-                                for (let j = 0; j < gachaConfigs.length; j++) {
-                                    if (gachaConfigs[j].id === id) continue; 
-                                    const otherCell = tableData[i-1].B[j]; 
-                                    if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
-                                        return gachaConfigs[j].id;
-                                    }
-                                } return null;
-                            };
-                            const findSameCharGachaB_prev2 = (baseCell) => {
-                                if (!baseCell || baseCell.rarity !== 'rare') return null;
-                                for (let j = 0; j < gachaConfigs.length; j++) {
-                                    const otherCell = tableData[i-2].B[j]; 
-                                    if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
-                                        return gachaConfigs[j].id;
-                                    }
-                                } return null;
-                            };
+                            // --- "新しい2行目" 以降 (CONTINUE) ---
                             
-                            // (3)(4)(8)(10) のための「他ガチャ」スキャン (Bトラック用)
-                            const findOtherGachaB_prev = () => {
-                                if (!dataB.cell_prev) return null;
-                                for (let j = 0; j < gachaConfigs.length; j++) {
-                                    if (gachaConfigs[j].id === id) continue;
-                                    const otherCell = tableData[i-1].B[j];
-                                    if (otherCell && otherCell.char.id !== dataB.cell_prev.char.id) {
-                                        return gachaConfigs[j].id;
-                                    }
-                                } return null;
-                            };
-                            const findOtherGachaB_prev2 = () => {
-                                if (!dataB.cell_prev2) return null;
-                                for (let j = 0; j < gachaConfigs.length; j++) {
-                                    if (gachaConfigs[j].id === id) continue;
-                                    const otherCell = tableData[i-2].B[j];
-                                    if (otherCell && otherCell.char.id !== dataB.cell_prev2.char.id) {
-                                        return gachaConfigs[j].id;
-                                    }
-                                } return null;
-                            };
-                            const findSameCharGachaA_prev = (baseCell) => {
-                                if (!baseCell || baseCell.rarity !== 'rare') return null;
-                                for (let j = 0; j < gachaConfigs.length; j++) {
-                                    if (gachaConfigs[j].id === id) continue; 
-                                    const otherCell = tableData[i-1].A[j]; 
-                                    if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
-                                        return gachaConfigs[j].id;
-                                    }
-                                } return null;
-                            };
-                            const findSameCharGachaA_prev2 = (baseCell) => {
-                                if (!baseCell || baseCell.rarity !== 'rare') return null;
-                                for (let j = 0; j < gachaConfigs.length; j++) {
-                                    const otherCell = tableData[i-2].A[j]; 
-                                    if (otherCell && otherCell.rarity === 'rare' && otherCell.char.id === baseCell.char.id) {
-                                        return gachaConfigs[j].id;
-                                    }
-                                } return null;
-                            };
-
-                            // A-i Logic (Continue)
-                            if (dataA.config_prev) { // A-(i-1) リンクあり
-                                if (!dataA.isRare_prev) { configA = incrementLastRoll(dataA.config_prev); } // (1)
-                                else { // レア
-                                    if (!dataA.isReroll_prev) { configA = incrementLastRoll(dataA.config_prev); } // (2)
-                                    else { // (3)-(5) レア被り
-                                        const otherGachaId1 = findOtherGachaA_prev();
-                                        if (otherGachaId1 && dataA.config_prev2) { configA = `${dataA.config_prev2}-${otherGachaId1}-1-${id}-1`; } // (3)
-                                        else {
-                                            const otherGachaId2 = findOtherGachaA_prev2();
-                                            if (otherGachaId2 && dataA.config_prev3) { configA = `${dataA.config_prev3}-${otherGachaId2}-1-${id}-2`; } // (4)
-                                            else { configA = null; } // (5)
-                                        }
-                                    }
-                                }
+                            // (C)は i < newRow1Index の範囲しか設定しないため、
+                            // i >= newRow1Index では常に null スタートとして計算する
+                            
+                            // ロールデータ取得 (i-1行目, i-2行目の情報)
+                            // ★ getCellDataFull は cellSimConfigs から最新の値を取得するので、(C)の結果を正しく参照できる
+                            const prevA = getPrevData('A', i, id);
+                            const prevB = getPrevData('B', i, id);
+                        
+                            // A-i Logic (Same Track Continuation)
+                            if (prevA.config) { 
+                                if (prevA.seedsConsumed <= 2) { configA = incrementLastRoll(prevA.config); } 
+                                // else { configA = null; } // 3シード消費なら null (デフォルト)
                             } 
-                            if (!configA && dataA.config_prev === null) { // A-(i-1) リンクなし、または (5)
-                                const dataB_forA = dataB; // rowDataB(id);
-                                if (dataB_forA.config_prev) { // B-(i-1) にリンクがある場合
-                                    if (!dataB_forA.isRare_prev) { // (6)(7)(8) 
-                                        const otherGachaId1_B = findSameCharGachaB_prev(dataB_forA.cell_prev); // (7)
-                                        if (otherGachaId1_B) {
-                                            const otherGachaId2_B = findSameCharGachaB_prev2(dataB_forA.cell_prev); // (8)
-                                            if (otherGachaId2_B && dataB_forA.config_prev3) { configA = `${dataB_forA.config_prev3}-${otherGachaId2_B}-1-${otherGachaId1_B}-1-${id}-1`; } // (8)
-                                            else { configA = null; } // (7)
-                                        } else { configA = null; } // (6)
-                                    } else { // B-(i-1) がレア
-                                        if (dataB_forA.isReroll_prev) { configA = incrementLastRoll(dataB_forA.config_prev); } // (9)
-                                        else { // (10)(11)
-                                            const otherGachaId1_B_same = findSameCharGachaB_prev(dataB_forA.cell_prev); // (10)
-                                            if (otherGachaId1_B_same && dataB_forA.config_prev3) { configA = `${dataB_forA.config_prev3}-${otherGachaId1_B_same}-1-${id}-1`; } // (10)
-                                            else { configA = null; } // (11)
-                                        }
-                                    }
-                                } else { configA = null; }
-                            }
                             
-                            // B-i Logic (Continue)
-                            if (dataB.config_prev) { // B-(i-1) リンクあり
-                                if (!dataB.isRare_prev) { configB = incrementLastRoll(dataB.config_prev); } // (1)
-                                else { // レア
-                                    if (!dataB.isReroll_prev) { configB = incrementLastRoll(dataB.config_prev); } // (2)
-                                    else { // (3)-(5) レア被り
-                                        const otherGachaId1 = findOtherGachaB_prev();
-                                        if (otherGachaId1 && dataB.config_prev2) { configB = `${dataB.config_prev2}-${otherGachaId1}-1-${id}-1`; } // (3)
-                                        else {
-                                            const otherGachaId2 = findOtherGachaB_prev2();
-                                            if (otherGachaId2 && dataB.config_prev3) { configB = `${dataB.config_prev3}-${otherGachaId2}-1-${id}-2`; } // (4)
-                                            else { configB = null; } // (5)
-                                        }
-                                    }
-                                }
-                            }
-                            if (!configB && dataB.config_prev === null) { // B-(i-1) リンクなし、または (5)
-                                const dataA_forB = dataA; // rowData(id);
-                                if (dataA_forB.config_prev) { // A-(i-1) にリンクがある場合
-                                    if (!dataA_forB.isRare_prev) { // (6)(7)(8) 
-                                        const otherGachaId1_A = findSameCharGachaA_prev(dataA_forB.cell_prev); // (7)
-                                        if (otherGachaId1_A) {
-                                            const otherGachaId2_A = findSameCharGachaA_prev2(dataA_forB.cell_prev); // (8)
-                                            if (otherGachaId2_A && dataA_forB.config_prev3) { configB = `${dataA_forB.config_prev3}-${otherGachaId2_A}-1-${otherGachaId1_A}-1-${id}-1`; } // (8)
-                                            else { configB = null; } // (7)
-                                        } else { configB = null; } // (6)
-                                    } else { // A-(i-1) がレア
-                                        if (dataA_forB.isReroll_prev) { configB = incrementLastRoll(dataA_forB.config_prev); } // (9)
-                                        else { // (10)(11)
-                                            const otherGachaId1_A_same = findSameCharGachaA_prev(dataA_forB.cell_prev); // (10)
-                                            if (otherGachaId1_A_same && dataA_forB.config_prev3) { configB = `${dataA_forB.config_prev3}-${otherGachaId1_A_same}-1-${id}-1`; } // (10)
-                                            else { configB = null; } // (11)
-                                        }
-                                    }
-                                } else { configB = null; }
+                            // A-i Logic (B -> A) 
+                            if (!configA) { 
+                                const prevPrevB = getPrevPrevCrossTrackData('B', i, id);
+                                if (prevPrevB.config && prevPrevB.seedsConsumed === 3) {
+                                    configA = incrementLastRoll(prevPrevB.config);
+                                } 
                             }
 
-                        } // (i >= newRow1Index)
+                            // B-i Logic (Same Track Continuation)
+                            if (prevB.config) { 
+                                if (prevB.seedsConsumed <= 2) { configB = incrementLastRoll(prevB.config); } 
+                            }
+                            
+                            // B-i Logic (A -> B) 
+                            if (!configB) { 
+                                // ★ 修正: getPrevData('A', i, id) は i-1 行目を参照するので正しい
+                                const prevA_for_B = getPrevData('A', i, id);
+                                if (prevA_for_B.config && prevA_for_B.seedsConsumed === 3) {
+                                    configB = incrementLastRoll(prevA_for_B.config); 
+                                }
+                            }
+                        } 
 
                         cellSimConfigs.set(`A-${i}-${id}`, configA);
                         cellSimConfigs.set(`B-${i}-${id}`, configB);
-                    }); // gachaConfigs.forEach
-                } // for (i)
-                // --- ▲▲▲ 修正ブロック (1)～(11) 実装 ▲▲▲ ---
+
+                        // --- ★ 新規: 回避/誘発ロジックの呼び出し ---
+                        // (デフォルトリンクが設定された *後* に呼び出す)
+                        const altDataA = checkAvoidanceAndForcing('A', i, id, tableData, gachaConfigs, cellSimConfigs, newRow1Index);
+                        const altDataB = checkAvoidanceAndForcing('B', i, id, tableData, gachaConfigs, cellSimConfigs, newRow1Index);
+                        
+                        if (altDataA.link) {
+                            cellSimConfigs_Alt.set(`A-${i}-${id}`, altDataA);
+                        }
+                        if (altDataB.link) {
+                            cellSimConfigs_Alt.set(`B-${i}-${id}`, altDataB);
+                        }
+                        // ----------------------------------------
+                    }); 
+                }
+                // --- (B) CONTINUEエリアのリンク設定 終了 ---
 
 
                 // 5. HTMLテーブルの構築
-                const buttonHtml = `<button class="add-gacha-btn" onclick="addGachaColumn()">＋</button>`;
+                const buttonHtml = `<button class="add-gacha-btn" onclick="addGachaColumn()">＋列を追加</button>`;
                 let totalColsA = 0;
                 tableGachaIds.forEach(idWithG => {
                     const id = idWithG.replace('g', '');
@@ -995,7 +1008,7 @@
                     </tr>
                     <tr>`;
                 
-                // Headers for Track A
+                // Headers for Track A and B
                 tableGachaIds.forEach((idWithG, index) => {
                     const isGuaranteed = idWithG.endsWith('g');
                     const id = isGuaranteed ? idWithG.slice(0, -1) : idWithG;
@@ -1018,7 +1031,6 @@
                     }
                 });
 
-                // Headers for Track B
                 tableGachaIds.forEach((idWithG, index) => {
                     const isGuaranteed = idWithG.endsWith('g');
                     const id = isGuaranteed ? idWithG.slice(0, -1) : idWithG;
@@ -1035,70 +1047,159 @@
 
                 tableHtml += `</tr></thead><tbody>`;
 
+                // --- セルコンテンツ生成ロジックのヘルパー関数 ---
+                function generateCellContent(track, i, id) {
+                    const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
+                    if (gachaIndex === -1 || !tableData[i] || !tableData[i][track][gachaIndex] || !tableData[i][track][gachaIndex].roll) return 'N/A';
+                    
+                    const fullRoll = tableData[i][track][gachaIndex].roll;
+                    
+                    // ★ デフォルトリンク と 代替リンク を両方取得
+                    const configStr = cellSimConfigs.get(`${track}-${i}-${id}`);
+                    const altData = cellSimConfigs_Alt.get(`${track}-${i}-${id}`) || { link: null, rerollCharName: null };
+                    const altConfigStr = altData.link;
+                    
+                    const highlightClass = (highlightMap.get(`${i}-${track}`) === id) ? ' highlight' : '';
+                    let cellContent = '';
+                    
+                    // 1. Next Cell Address/Link Calculation
+                    let nextAddress = null;
+                    
+                    // 3シード消費: A(i) -> B(i+1) or B(i) -> A(i+2)
+                    if (fullRoll.seedsConsumed === 3) {
+                        const destTrack = (track === 'A' ? 'B' : 'A');
+                        const destRow = (track === 'A' ? i + 1 : i + 2);
+                        // リンクの有無にかかわらず、遷移先番地を計算
+                        if (destRow < numRolls) { 
+                            nextAddress = `${destRow + 1}${destTrack}`; 
+                        }
+                    } 
+                    // 2シード消費は nextAddress = null (要件に従い非表示)
+
+                    let addressPrefix = nextAddress ? `${nextAddress}) ` : '';
+                    
+                    // --- ★ 修正: 回避/誘発ロジックを反映 ---
+                    
+                    if (fullRoll.isRerolled) {
+                        // === デフォルト: 3-seed (レア被り) ===
+                        const originalCharName = fullRoll.originalChar.name;
+                        const rerollCharName = fullRoll.finalChar.name;
+                        
+                        let originalDisplay = originalCharName;
+                        let rerollDisplay = rerollCharName;
+
+                        // 再抽選後 (デフォルトリンク)
+                        if (configStr) {
+                            const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configStr)}&gachas=${tableGachaIds.join('-')}`;
+                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${configStr}'; resetAndGenerateTable();`;
+                            rerollDisplay = `<a href="${href}" onclick="${onclickAction}">${addressPrefix}${rerollCharName}</a>`;
+                        } else {
+                            rerollDisplay = `${addressPrefix}${rerollCharName}`;
+                        }
+                        
+                        // 再抽選前 (回避リンク)
+                        if (altConfigStr) {
+                            const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(altConfigStr)}&gachas=${tableGachaIds.join('-')}`;
+                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${altConfigStr}'; resetAndGenerateTable();`;
+                            // 回避(2-seed)はアドレスプレフィックスがつかない
+                            originalDisplay = `<a href="${href}" onclick="${onclickAction}">${originalCharName}</a>`;
+                        }
+                        
+                        cellContent = `${originalDisplay}<br>${rerollDisplay}`;
+                        
+                    } else {
+                        // === デフォルト: 2-seed (通常) ===
+                        const originalCharName = fullRoll.finalChar.name;
+                        let originalDisplay = originalCharName;
+                        
+                        // 通常キャラ (デフォルトリンク)
+                        if (configStr) {
+                            const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configStr)}&gachas=${tableGachaIds.join('-')}`;
+                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${configStr}'; resetAndGenerateTable();`;
+                            // 2シード消費は nextAddress=null のためアドレスは表示されない
+                            originalDisplay = `<a href="${href}" onclick="${onclickAction}">${addressPrefix}${originalCharName}</a>`;
+                        } else {
+                            originalDisplay = `${addressPrefix}${originalCharName}`;
+                        }
+                        
+                        cellContent = originalDisplay;
+                        
+                        // 再抽選後 (誘発リンク)
+                        if (altConfigStr) {
+                            const rerollCharName = altData.rerollCharName || "??";
+                            // 誘発(3-seed)はアドレスプレフィックスが *つく*
+                            const inducedAddressPrefix = nextAddress ? `${nextAddress}) ` : ''; // (i*2)+2 が 3-seed と同じ遷移先になるか？ -> なる
+
+                            const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(altConfigStr)}&gachas=${tableGachaIds.join('-')}`;
+                            const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${altConfigStr}'; resetAndGenerateTable();`;
+                            
+                            const rerollDisplay = `<a href="${href}" onclick="${onclickAction}">${inducedAddressPrefix}${rerollCharName}</a>`;
+                            
+                            cellContent = `${originalDisplay}<br>${rerollDisplay}`;
+                        }
+                    }
+                    // ---------------------------------
+
+                    return `<td class="gacha-cell${highlightClass}">${cellContent}</td>`;
+                }
+                
+                // --- ヘルパー関数 終了 ---
+
+
                 for (let i = 0; i < numRolls; i++) {
                     let rowHtml = `<tr><td class="col-no">${i + 1}</td>`;
                     rowHtml += `<td class="${seedColClass}">${seeds[2 * i]}</td><td class="${seedColClass}">${seeds[2 * i + 1]}</td>`;
                     
+                    // Track A Cells
                     tableGachaIds.forEach(idWithG => {
-                        const isGuaranteed = idWithG.endsWith('g');
-                        const id = isGuaranteed ? idWithG.slice(0, -1) : idWithG;
+                        const isGuaranteedColumn = idWithG.endsWith('g');
+                        const id = isGuaranteedColumn ? idWithG.slice(0, -1) : idWithG;
                         const gachaConfig = gachaMasterData.gachas[id];
                         if (!gachaConfig) return; 
                         
-                        const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
-                        if (gachaIndex === -1 || !tableData[i] || !tableData[i].A[gachaIndex] || !tableData[i].A[gachaIndex].char) {
-                            rowHtml += `<td>N/A</td>`; if (isGuaranteed) rowHtml += `<td>N/A</td>`; return;
-                        }
-                        const cellDataA = tableData[i].A[gachaIndex];
+                        // Normal A roll
+                        rowHtml += generateCellContent('A', i, id);
                         
-                        const highlightGachaIdA = highlightMap.get(`${i}-A`);
-                        // 確定枠自体はハイライトしないが、確定枠のアンカーがある場合はハイライトを付ける
-                        const highlightGachaIdG_A = highlightMap.get(`${i}-A-G`); 
-                        const highlightClass = (highlightGachaIdA === id || highlightGachaIdG_A === id) ? ' class="highlight"' : '';
-                        
-                        const configStrA = cellSimConfigs.get(`A-${i}-${id}`);
-                        
-                        if (configStrA) {
-                            const hrefA = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configStrA)}&gachas=${tableGachaIds.join('-')}`;
-                            const onclickActionA = `event.preventDefault(); document.getElementById('sim-config').value = '${configStrA}'; resetAndGenerateTable();`;
-                            rowHtml += `<td${highlightClass}><a href="${hrefA}" onclick="${onclickActionA}">${cellDataA.char.name}</a></td>`;
-                        } else {
-                             rowHtml += `<td${highlightClass}>${cellDataA.char.name}</td>`;
-                        }
-                        
-                        if (isGuaranteed) {
-                            let lastDraw = (i > 0 && tableData[i-1] && tableData[i-1].A[gachaIndex] && tableData[i-1].A[gachaIndex].char) ? { rarity: tableData[i-1].A[gachaIndex].rarity, charId: tableData[i-1].A[gachaIndex].char.id } : null;
-                            const { name: guaranteedChar, nextSeed } = calculateGuaranteedLookahead(i * 2, gachaConfig, seeds, lastDraw);
+                        if (isGuaranteedColumn) {
+                            // Guaranteed column (G)
+                            let lastDraw = (i > 0 && tableData[i-1] && tableData[i-1].A[gachaConfigs.findIndex(c => c.id === id)] && tableData[i-1].A[gachaConfigs.findIndex(c => c.id === id)].roll) ? { rarity: tableData[i-1].A[gachaConfigs.findIndex(c => c.id === id)].roll.rarity, charId: tableData[i-1].A[gachaConfigs.findIndex(c => c.id === id)].roll.charId } : null;
+                            const { name: guaranteedChar, nextRollStartSeedIndex } = calculateGuaranteedLookahead(i * 2, gachaConfig, seeds, lastDraw);
                             
-                            // 確定枠自体はハイライトしない
                             let guaranteedHighlight = '';
-                            
                             let content = guaranteedChar;
-                            const isAnchor = (anchorInfo && anchorInfo.row === i && anchorInfo.track === 'A' && anchorInfo.gachaId === id);
+                            let nextAddressG = null;
 
-                            // G列のリンクは、A列がリンクの場合のみ生成
-                            if (configStrA) {
-                                const parsedA = parseSimConfig(configStrA);
-                                const lastPartA = parsedA.pop();
+                            // 次のロールの番地を計算
+                            if (nextRollStartSeedIndex !== null && nextRollStartSeedIndex < seeds.length) {
+                                const nextRow = Math.floor(nextRollStartSeedIndex / 2);
+                                const nextTrack = (nextRollStartSeedIndex % 2 === 0) ? 'A' : 'B';
+                                nextAddressG = `${nextRow + 1}${nextTrack}`;
+                            }
+
+                            // *** 確定枠のハイライト判定 (AトラックのG列) ***
+                            if (highlightMap.get(`${i}-AG`) === id) {
+                                guaranteedHighlight = ' class="highlight"';
+                            }
+                            // *************************************************
+
+                            // G列のリンクは、左のセルがリンクの場合に設定 (Rule E)
+                            const configStrA = cellSimConfigs.get(`A-${i}-${id}`);
+                            const configG_A = generateGuaranteedConfig(configStrA, id); 
+                            
+                            let addressPrefixG = nextAddressG ? `${nextAddressG}) ` : '';
+                            
+                            if (configG_A) {
+                                const hrefG = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configG_A)}&gachas=${tableGachaIds.join('-')}`;
+                                const onclickActionG = `event.preventDefault(); document.getElementById('sim-config').value = '${configG_A}'; resetAndGenerateTable();`;
                                 
-                                // 確定列の sim-config ロジック: 通常ロールの最後のロール数を-1し、ID+11gを付加
-                                if (lastPartA && lastPartA.rolls > 0) { 
-                                    lastPartA.rolls -= 1;
-                                    if (lastPartA.rolls > 0) parsedA.push(lastPartA);
-                                    parsedA.push({ id: id, rolls: 11, g: true });
-                                    const configG_A = stringifySimConfig(parsedA);
-
-                                    const hrefG = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configG_A)}&gachas=${tableGachaIds.join('-')}`;
-                                    const onclickActionG = `event.preventDefault(); document.getElementById('sim-config').value = '${configG_A}'; resetAndGenerateTable();`;
-                                    // ⚓マークを削除
-                                    content = `<a href="${hrefG}" onclick="${onclickActionG}">${guaranteedChar}</a>`;
-                                }
+                                // 要件: 遷移先番地を表示
+                                content = `<a href="${hrefG}" onclick="${onclickActionG}">${addressPrefixG}${guaranteedChar}</a>`;
+                            } 
+                            
+                            // リンクがない場合でも、番地は表示する
+                            if (!content.includes('<a')) {
+                                content = `${addressPrefixG}${guaranteedChar}`;
                             }
-                            if (isAnchor && content === guaranteedChar) { // アンカーだがリンクがなかった場合
-                                // ⚓マークを削除
-                                content = `${guaranteedChar}`;
-                            }
-                            if (isAnchor) guaranteedHighlight = ' class="highlight"';
                             
                             rowHtml += `<td${guaranteedHighlight}>${content}</td>`;
                         }
@@ -1107,63 +1208,55 @@
                     rowHtml += `<td class="col-no">${i + 1}</td>`;
                     rowHtml += `<td class="${seedColClass}">${seeds[2 * i + 1]}</td><td class="${seedColClass}">${seeds[2 * i + 2]}</td>`;
 
+                    // Track B Cells
                     tableGachaIds.forEach(idWithG => {
-                        const isGuaranteed = idWithG.endsWith('g');
-                        const id = isGuaranteed ? idWithG.slice(0, -1) : idWithG;
+                        const isGuaranteedColumn = idWithG.endsWith('g');
+                        const id = isGuaranteedColumn ? idWithG.slice(0, -1) : idWithG;
                         const gachaConfig = gachaMasterData.gachas[id];
                         if (!gachaConfig) return;
 
-                        const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
-                        if (gachaIndex === -1 || !tableData[i] || !tableData[i].B[gachaIndex] || !tableData[i].B[gachaIndex].char) {
-                            rowHtml += `<td>N/A</td>`; if (isGuaranteed) rowHtml += `<td>N/A</td>`; return;
-                        }
-                        const cellDataB = tableData[i].B[gachaIndex];
-                        
-                        const highlightGachaIdB = highlightMap.get(`${i}-B`);
-                        const highlightGachaIdG_B = highlightMap.get(`${i}-B-G`);
-                        const highlightClass = (highlightGachaIdB === id || highlightGachaIdG_B === id) ? ' class="highlight"' : '';
-                        
-                        const configStrB = cellSimConfigs.get(`B-${i}-${id}`);
+                        // Normal B roll
+                        rowHtml += generateCellContent('B', i, id);
 
-                        if (configStrB) {
-                            const hrefB = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configStrB)}&gachas=${tableGachaIds.join('-')}`;
-                            const onclickActionB = `event.preventDefault(); document.getElementById('sim-config').value = '${configStrB}'; resetAndGenerateTable();`;
-                            rowHtml += `<td${highlightClass}><a href="${hrefB}" onclick="${onclickActionB}">${cellDataB.char.name}</a></td>`;
-                        } else {
-                            rowHtml += `<td${highlightClass}>${cellDataB.char.name}</td>`;
-                        }
-
-                        if (isGuaranteed) {
-                             let lastDraw = (i > 0 && tableData[i-1] && tableData[i-1].B[gachaIndex] && tableData[i-1].B[gachaIndex].char) ? { rarity: tableData[i-1].B[gachaIndex].rarity, charId: tableData[i-1].B[gachaIndex].char.id } : null;
-                             const { name: guaranteedChar, nextSeed } = calculateGuaranteedLookahead(i * 2 + 1, gachaConfig, seeds, lastDraw);
+                        if (isGuaranteedColumn) {
+                             // Guaranteed column (G)
+                             let lastDraw = (i > 0 && tableData[i-1] && tableData[i-1].B[gachaConfigs.findIndex(c => c.id === id)] && tableData[i-1].B[gachaConfigs.findIndex(c => c.id === id)].roll) ? { rarity: tableData[i-1].B[gachaConfigs.findIndex(c => c.id === id)].roll.rarity, charId: tableData[i-1].B[gachaConfigs.findIndex(c => c.id === id)].roll.charId } : null;
+                             const { name: guaranteedChar, nextRollStartSeedIndex } = calculateGuaranteedLookahead(i * 2 + 1, gachaConfig, seeds, lastDraw);
                              
                              let guaranteedHighlight = '';
-                             
                              let content = guaranteedChar;
-                             const isAnchor = (anchorInfo && anchorInfo.row === i && anchorInfo.track === 'B' && anchorInfo.gachaId === id);
+                             let nextAddressG = null;
 
-                             if (configStrB) {
-                                const parsedB = parseSimConfig(configStrB);
-                                const lastPartB = parsedB.pop();
+                             // 次のロールの番地を計算
+                             if (nextRollStartSeedIndex !== null && nextRollStartSeedIndex < seeds.length) {
+                                const nextRow = Math.floor(nextRollStartSeedIndex / 2);
+                                const nextTrack = (nextRollStartSeedIndex % 2 === 0) ? 'A' : 'B';
+                                nextAddressG = `${nextRow + 1}${nextTrack}`;
+                             }
+                             
+                             // *** 確定枠のハイライト判定 (BトラックのG列) ***
+                             if (highlightMap.get(`${i}-BG`) === id) {
+                                guaranteedHighlight = ' class="highlight"';
+                             }
+                             // *************************************************
+
+                             const configStrB = cellSimConfigs.get(`B-${i}-${id}`);
+                             const configG_B = generateGuaranteedConfig(configStrB, id); 
+
+                             let addressPrefixG = nextAddressG ? `${nextAddressG}) ` : '';
+                             
+                             if (configG_B) {
+                                const hrefG = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configG_B)}&gachas=${tableGachaIds.join('-')}`;
+                                const onclickActionG = `event.preventDefault(); document.getElementById('sim-config').value = '${configG_B}'; resetAndGenerateTable();`;
                                 
-                                // 確定列の sim-config ロジック: 通常ロールの最後のロール数を-1し、ID+11gを付加
-                                if(lastPartB && lastPartB.rolls > 0) {
-                                    lastPartB.rolls -= 1;
-                                    if (lastPartB.rolls > 0) parsedB.push(lastPartB);
-                                    parsedB.push({ id: id, rolls: 11, g: true });
-                                    const configG_B = stringifySimConfig(parsedB);
-                                    
-                                    const hrefG = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configG_B)}&gachas=${tableGachaIds.join('-')}`;
-                                    const onclickActionG = `event.preventDefault(); document.getElementById('sim-config').value = '${configG_B}'; resetAndGenerateTable();`;
-                                    // ⚓マークを削除
-                                    content = `<a href="${hrefG}" onclick="${onclickActionG}">${guaranteedChar}</a>`;
-                                }
+                                // 要件: 遷移先番地を表示
+                                content = `<a href="${hrefG}" onclick="${onclickActionG}">${addressPrefixG}${guaranteedChar}</a>`;
                              }
-                             if (isAnchor && content === guaranteedChar) {
-                                 // ⚓マークを削除
-                                content = `${guaranteedChar}`;
+                             
+                             // リンクがない場合でも、番地は表示する
+                             if (!content.includes('<a')) {
+                                content = `${addressPrefixG}${guaranteedChar}`;
                              }
-                             if (isAnchor) guaranteedHighlight = ' class="highlight"';
                              
                              rowHtml += `<td${guaranteedHighlight}>${content}</td>`;
                         }
@@ -1183,13 +1276,13 @@
                         const result = sim.result;
                         let line;
                         if (sim.isGuaranteed) {
-                             line = `[${sim.rollNum}回目] ${sim.track} | GachaID: ${sim.id} | uber guaranteed ${result.s0}(%${result.totalChars}=${result.charIndex}) ${result.finalChar.name}`;
+                             line = `[${sim.rollNum}回目] ${sim.track} | GachaID: ${sim.id} | uber guaranteed ${result.s0} ${result.finalChar.name} (確定枠のシード)`;
                         } else {
-                            line = `[${sim.rollNum}回目] ${sim.track} | GachaID: ${sim.id} | ${result.s0}(${result.rarityRoll})${result.rarity}`;
+                            line = `[${sim.rollNum}回目] ${sim.track} | GachaID: ${sim.id} | ${result.s0}(${result.rarity})${result.rarity}`;
                             if (result.isRerolled) {
-                                line += ` ${result.originalChar.name} -> ${result.s2}(%${result.uniqueTotal}=${result.reRollIndex}) ${result.finalChar.name}`;
+                                line += ` ${result.originalChar.name} -> ${result.s2} ${result.finalChar.name} (${result.seedsConsumed} seeds)`;
                             } else {
-                                line += `／${result.s1}(%${result.totalChars}=${result.charIndex}) ${result.finalChar.name}`;
+                                line += `／${result.s1} ${result.finalChar.name} (${result.seedsConsumed} seeds)`;
                             }
                         }
                         simulationOutputString += line + '\n';
