@@ -777,6 +777,7 @@
                 const cellSimConfigs = new Map(); // key 'A-i-id' -> "sim-config-string" (デフォルトリンク)
                 // ★ 新規: 代替リンク (回避/誘発) を保存するMap
                 const cellSimConfigs_Alt = new Map(); // key 'A-i-id' -> { link: string, rerollCharName: string|null }
+                const speciallyContinuedLinks = new Map(); // ★ 新規: 特別ロジックで継続されたリンクを追跡
                 
                 
                 // --- (A) ハイライトの終点（新しい開始点）を特定 ---
@@ -904,8 +905,6 @@
 
 
                 // --- (B) 継続リンクの生成 (CONTINUEエリア) ---
-                // (newRow1Index 以降の行に、継続リンク生成ロジックを適用)
-                // ★ 修正: ループの開始を newRow1Index に変更
                 for (let i = newRow1Index; i < numRolls; i++) {
                     gachaConfigs.forEach(config => {
                         const id = config.id;
@@ -915,59 +914,98 @@
 
                         if (i === newRow1Index) {
                             // --- "新しい1行目" (FIX & Continueの開始点) ---
-                            // (C)で設定されたかもしれない値を上書きする
                             if (startTrack === 'A') {
                                 configA = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
-                                configB = null; // 反対側はクリア
                             } else { // startTrack === 'B'
-                                configA = null; // 反対側はクリア
                                 configB = `${baseConfig ? baseConfig + '-' : ''}${id}-1`;
                             }
                         } else {
                             // --- "新しい2行目" 以降 (CONTINUE) ---
-                            
-                            // (C)は i < newRow1Index の範囲しか設定しないため、
-                            // i >= newRow1Index では常に null スタートとして計算する
-                            
-                            // ロールデータ取得 (i-1行目, i-2行目の情報)
-                            // ★ getCellDataFull は cellSimConfigs から最新の値を取得するので、(C)の結果を正しく参照できる
                             const prevA = getPrevData('A', i, id);
                             const prevB = getPrevData('B', i, id);
-                        
-                            // A-i Logic (Same Track Continuation)
-                            if (prevA.config) { 
-                                if (prevA.seedsConsumed <= 2) { configA = incrementLastRoll(prevA.config); } 
-                                // else { configA = null; } // 3シード消費なら null (デフォルト)
-                            } 
-                            
-                            // A-i Logic (B -> A) 
-                            if (!configA) { 
+                            const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
+
+                            // --- Default A-i Logic ---
+                            const isPrevASpecial = speciallyContinuedLinks.get(`A-${i - 1}-${id}`);
+                            if (prevA.config && (prevA.seedsConsumed <= 2 || isPrevASpecial)) {
+                                configA = incrementLastRoll(prevA.config);
+                            } else {
                                 const prevPrevB = getPrevPrevCrossTrackData('B', i, id);
                                 if (prevPrevB.config && prevPrevB.seedsConsumed === 3) {
                                     configA = incrementLastRoll(prevPrevB.config);
-                                } 
-                            }
-
-                            // B-i Logic (Same Track Continuation)
-                            if (prevB.config) { 
-                                if (prevB.seedsConsumed <= 2) { configB = incrementLastRoll(prevB.config); } 
-                            }
-                            
-                            // B-i Logic (A -> B) 
-                            if (!configB) { 
-                                // ★ 修正: getPrevData('A', i, id) は i-1 行目を参照するので正しい
-                                const prevA_for_B = getPrevData('A', i, id);
-                                if (prevA_for_B.config && prevA_for_B.seedsConsumed === 3) {
-                                    configB = incrementLastRoll(prevA_for_B.config); 
                                 }
                             }
-                        } 
+
+                            // --- Default B-i Logic ---
+                            const isPrevBSpecial = speciallyContinuedLinks.get(`B-${i - 1}-${id}`);
+                            if (prevB.config && (prevB.seedsConsumed <= 2 || isPrevBSpecial)) {
+                                configB = incrementLastRoll(prevB.config);
+                            } else {
+                                const prevA_for_B = getPrevData('A', i, id);
+                                if (prevA_for_B.config && prevA_for_B.seedsConsumed === 3) {
+                                    configB = incrementLastRoll(prevA_for_B.config);
+                                }
+                            }
+
+                            // --- Special Override Logic ---
+                            if (gachaIndex !== -1) {
+                                const prevRollDataA = tableData[i - 1]?.A[gachaIndex];
+                                if (prevRollDataA && prevRollDataA.roll.isRerolled) {
+                                    const prevAltDataA = cellSimConfigs_Alt.get(`A-${i - 1}-${id}`);
+                                    const prevConfigStrA = cellSimConfigs.get(`A-${i - 1}-${id}`);
+                                    if (prevAltDataA && prevAltDataA.link && prevConfigStrA) {
+                                        configA = incrementLastRoll(prevAltDataA.link); // OVERRIDE
+                                        speciallyContinuedLinks.set(`A-${i}-${id}`, true); // Mark for next iteration
+                                    }
+                                }
+                                const prevRollDataB = tableData[i - 1]?.B[gachaIndex];
+                                if (prevRollDataB && prevRollDataB.roll.isRerolled) {
+                                    const prevAltDataB = cellSimConfigs_Alt.get(`B-${i - 1}-${id}`);
+                                    const prevConfigStrB = cellSimConfigs.get(`B-${i - 1}-${id}`);
+                                    if (prevAltDataB && prevAltDataB.link && prevConfigStrB) {
+                                        configB = incrementLastRoll(prevAltDataB.link); // OVERRIDE
+                                        speciallyContinuedLinks.set(`B-${i}-${id}`, true); // Mark for next iteration
+                                    }
+                                }
+                            }
+
+                            // --- New Cross-Track Logic ---
+                            if (gachaIndex !== -1) {
+                                // Rule 1: A(i-1) -> B(i)
+                                const triggerCellA = tableData[i - 1]?.A[gachaIndex];
+                                if (triggerCellA && triggerCellA.roll.isRerolled) {
+                                    const triggerAltA = cellSimConfigs_Alt.get(`A-${i - 1}-${id}`);
+                                    const triggerDefaultA = cellSimConfigs.get(`A-${i - 1}-${id}`);
+                                    if (triggerAltA && triggerAltA.link && triggerDefaultA) {
+                                        const sourceCellB_Alt = cellSimConfigs_Alt.get(`B-${i - 1}-${id}`);
+                                        if (sourceCellB_Alt && sourceCellB_Alt.link) {
+                                            configB = incrementLastRoll(sourceCellB_Alt.link);
+                                        }
+                                    }
+                                }
+
+                                // Rule 2: B(i-2) -> A(i)
+                                if (i > 1) {
+                                    const triggerCellB = tableData[i - 2]?.B[gachaIndex];
+                                    if (triggerCellB && triggerCellB.roll.isRerolled) {
+                                        const triggerAltB = cellSimConfigs_Alt.get(`B-${i - 2}-${id}`);
+                                        const triggerDefaultB = cellSimConfigs.get(`B-${i - 2}-${id}`);
+                                        if (triggerAltB && triggerAltB.link && triggerDefaultB) {
+                                            const sourceCellA_Alt = cellSimConfigs_Alt.get(`A-${i - 1}-${id}`);
+                                            if (sourceCellA_Alt && sourceCellA_Alt.link) {
+                                                configA = incrementLastRoll(sourceCellA_Alt.link);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // --- End of New Cross-Track Logic ---
+                        }
 
                         cellSimConfigs.set(`A-${i}-${id}`, configA);
                         cellSimConfigs.set(`B-${i}-${id}`, configB);
 
-                        // --- ★ 新規: 回避/誘発ロジックの呼び出し ---
-                        // (デフォルトリンクが設定された *後* に呼び出す)
+                        // --- Reroll/Force-reroll (Alternative) Link Calculation ---
                         const altDataA = checkAvoidanceAndForcing('A', i, id, tableData, gachaConfigs, cellSimConfigs, newRow1Index);
                         const altDataB = checkAvoidanceAndForcing('B', i, id, tableData, gachaConfigs, cellSimConfigs, newRow1Index);
                         
@@ -977,8 +1015,7 @@
                         if (altDataB.link) {
                             cellSimConfigs_Alt.set(`B-${i}-${id}`, altDataB);
                         }
-                        // ----------------------------------------
-                    }); 
+                    });
                 }
                 // --- (B) CONTINUEエリアのリンク設定 終了 ---
 
