@@ -3,52 +3,53 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>なんちゃってレアガチャロールズ</title>
+    <title>NanchtteGachaRollSimulator</title>
     <style>
-        body { font-family: Arial, sans-serif; padding: 20px; }
-        #controls label, #controls input, #controls button { margin-right: 10px; margin-bottom: 10px; display: inline-block; }
+        body { font-family: Arial, sans-serif; padding: 10px; font-size: 12px; }
+        h1 { font-size: 1em; font-weight: bold; text-align: center; margin-bottom: 10px;}
+        #controls label, #controls input, #controls button, #controls span { margin-right: 10px; margin-bottom: 10px; display: inline-block; }
         .error { color: red; font-weight: bold; }
-        table { border-collapse: collapse; width: 100%; margin-top: 10px; /* Removed table-layout: fixed; */ }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        /* Removed th:not, td:not rule that set width: 100% */
+        table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 4px; text-align: left; }
         th { background-color: #f2f2f2; text-align: center; vertical-align: middle; position: relative; }
         .highlight { background-color: #CCFFCE; } /* Light Green */
-        .highlight-uber { background-color: #6EFF72; color: white; } /* Lighter Green */
+        .highlight-uber { background-color: #6EFF72; color: black; } /* Brighter Green */
         .gacha-select-header { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; }
-        .gacha-select-header span { margin-left: 5px; font-size: 12px; }
+        .gacha-select-header span { margin-left: 5px; font-size: 10px; }
         .gacha-select-header select {
-            width: 20px; /* 幅を最小に */
-            -webkit-appearance: none; /* Safari, Chrome */
-            -moz-appearance: none; /* Firefox */
-            appearance: none; /* 標準 */
-            background: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 5'%3E%3Cpath fill='%23333' d='M2 0L0 2h4zm0 5L0 3h4z'/%3E%3C/svg%3E") no-repeat right / .8em; /* 矢印アイコン */
-            padding-right: 1em; /* アイコンのスペース */
+            width: 20px;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 5'%3E%3Cpath fill='%23333' d='M2 0L0 2h4zm0 5L0 3h4z'/%3E%3C/svg%3E") no-repeat right / .8em;
+            padding-right: 1em;
         }
         .gacha-select-header button { font-size: 10px; padding: 2px 4px; margin-left: 4px; }
         .add-gacha-btn { font-size: 12px; font-weight: normal; padding: 2px 6px; margin-left: 15px; }
         #result { margin-top: 20px; border: 1px solid #ccc; padding: 10px; white-space: pre-wrap; font-family: monospace; background-color: #f9f9f9; max-height: 300px; overflow-y: auto; }
-        #table-actions { text-align: center; margin-top: 20px; }
+        #table-actions { text-align: center; margin-top: 10px; }
         #table-actions button { margin: 0 5px; }
 
         /* Toggle visibility classes */
         .hidden { display: none; }
-        .seed-column { width: 90px; text-align: center; font-size: 10px; color: #555; }
-        .col-no { width: 45px; text-align: center; white-space: nowrap; }
+        .seed-column { width: 75px; text-align: center; font-size: 10px; color: #555; }
+        .col-no { width: 35px; text-align: center; white-space: nowrap; }
+        #toggle-description, #toggle-sim-input, #toggle-seed-input { cursor: pointer; color: blue; text-decoration: underline; margin-bottom: 10px; display: block; text-align: center; }
+        #description-content { border: 1px solid #ccc; padding: 10px; margin-top: 10px; margin-bottom: 10px; white-space: pre-wrap; font-size: 11px; }
+
 
         @media screen and (max-width: 768px) {
             body {
                 padding: 5px;
                 -webkit-text-size-adjust: 100%;
             }
-            h1 {
-                font-size: 1.2em;
-            }
             #controls {
                 padding: 10px;
             }
             #controls label,
             #controls input,
-            #controls button {
+            #controls button, 
+            #controls span {
                 display: block;
                 width: 95%;
                 margin: 0 auto 10px auto;
@@ -63,28 +64,47 @@
                 min-width: 800px;
             }
             th, td {
-                padding: 8px 6px;
-                font-size: 13px;
-                line-height: 1.4;
+                padding: 4px;
+                font-size: 11px;
+                line-height: 1.3;
             }
             td.gacha-cell {
                 word-break: break-word;
             }
             .gacha-select-header span {
-                font-size: 10px;
+                font-size: 9px;
             }
         }
     </style>
 </head>
 <body>
-    <h1>なんちゃってGachaRolls（gr）シミュレーター（レアロールズ）</h1>
+    <h1>NanchtteGachaRollSimulator</h1>
+
+    <div id="toggle-description" onclick="toggleDescription()">概要を非表示</div>
+    <div id="description-content">概要（案）
+このシミュレーターはロールズのルート取り専用に作成したものです。本家のロールズと違い、操作が非常に分かりにくいので、操作方法を簡単に説明します。
+（作成者の想定した使い方）
+１，SEED欄にシーカー等で調べた開始前SEEDを入力（例）12345
+２．表のA列タイトルのガチャ名の左にあるフィルダウンリストから引きたいガチャを選択（例）ウルトラソウルズ、波動バスターズ
+なお、他のガチャも引きたい場合は「A」の横の「+列を追加」で追加
+３．自分も引きたい順に表の上の方からキャラをタップしていく（例）、11A左：うらしまタロウ、12A右：前田慶次、19A：きんたろう、（ウルトラソウルズの右の「G」をタップして表示して）25AG左：ももたろう、37B左：花咲かじいさん、・・・
+なお、キャラをタップするとそのマスから11連確定等を使わないと到達できないマスはキャラ名をタップしても反応しなくなります
+SEED更新ボタンを押すとシミュレーションにより薄緑色等でハイライトされた最後のマスの最終SEEDが反映され、表が更新されます
+※機能が少なく、エラーも多いので、少しずつ対応していくつもりです</div>
 
     <div id="controls">
-        <label for="seed">SEED:</label>
-        <input type="number" id="seed" value="12345" min="1" max="4294967295" onchange="resetAndGenerateTable()">
         <button onclick="updateSeedFromSim()">SEED更新</button>
-        <label for="sim-config">シミュレーション:</label>
-        <input type="text" id="sim-config" placeholder="ガチャID-ロール数" onchange="resetAndGenerateTable()">
+        <span id="toggle-seed-input" onclick="showSeedInput()">SEED入力</span>
+        <div id="seed-controls" class="hidden">
+            <label for="seed">SEED:</label>
+            <input type="number" id="seed" value="12345" min="1" max="4294967295" onchange="resetAndGenerateTable()">
+        </div>
+        <span id="toggle-sim-input" onclick="showSimInput()">シミュレーションテキスト入力欄表示</span>
+        <div id="simulation-controls" class="hidden">
+            <label for="sim-config">シミュレーション:</label>
+            <input type="text" id="sim-config" placeholder="ガチャID-ロール数" onchange="resetAndGenerateTable()">
+            <button onclick="clearSimConfig()">クリア</button>
+        </div>
     </div>
 
     <div id="rolls-table-container"></div>
@@ -103,6 +123,32 @@
         let showSeedColumns = false;
         let showResultDisplay = false;
         let finalSeedForUpdate = null; // SEED更新ボタン用
+
+        function toggleDescription() {
+            const content = document.getElementById('description-content');
+            const toggle = document.getElementById('toggle-description');
+            const isHidden = content.classList.toggle('hidden');
+            toggle.textContent = isHidden ? '概要を表示' : '概要を非表示';
+        }
+
+        function showSimInput() {
+            // 'simulation-controls' というIDを持つ要素を取得
+            var simControls = document.getElementById('simulation-controls');
+            // 'hidden' クラスをトグルする
+            simControls.classList.toggle('hidden');
+        }
+
+        function showSeedInput() {
+            // 'seed-controls' というIDを持つ要素を取得
+            var seedControls = document.getElementById('seed-controls');
+            // 'hidden' クラスが付いていれば外し、付いていなければ付ける
+            seedControls.classList.toggle('hidden');
+        }
+
+        function clearSimConfig() {
+            document.getElementById('sim-config').value = '';
+            resetAndGenerateTable();
+        }
 
         const fallbackCats = [
             {id:31,name:"ネコぼさつ",rarity:3},{id:32,name:"ネコ番長",rarity:3},{id:33,name:"ネコザイル",rarity:3},{id:34,name:"ねこタツ",rarity:3},{id:35,name:"ネコルガ",rarity:4},{id:36,name:"オタネコ",rarity:3},{id:37,name:"ネコスイマー",rarity:3},{id:38,name:"ネコホッピング",rarity:2},{id:39,name:"ネコ車輪",rarity:2},{id:40,name:"ネコリンゴ",rarity:3},{id:41,name:"ネコバスたぶ",rarity:3},{id:42,name:"ネコエステ",rarity:2},{id:43,name:"ネコアイス",rarity:4},{id:44,name:"ネコマシン",rarity:4},{id:45,name:"鬼にゃんま",rarity:4},{id:47,name:"ねこジュラ",rarity:2},{id:48,name:"ねこファイター",rarity:2},{id:49,name:"ねこ海賊",rarity:2},{id:50,name:"ねこ泥棒",rarity:2},{id:51,name:"ねこ僧侶",rarity:2},{id:52,name:"ねこ占い師",rarity:2},{id:53,name:"ネコシャーマン",rarity:2},{id:56,name:"ネコ魔女",rarity:2},{id:57,name:"ネコアーチャー",rarity:2},{id:58,name:"ネコシュバリエ",rarity:4},{id:59,name:"ネコ魔剣士",rarity:2},{id:60,name:"ねこベビー",rarity:4},{id:62,name:"ねこ寿司",rarity:3},{id:76,name:"風神のウィンディ",rarity:4},{id:84,name:"地龍ソドム",rarity:4},{id:85,name:"聖龍メギドラ",rarity:4},{id:107,name:"召し豚のカイ",rarity:4},{id:108,name:"宝杖のカッパーマイン",rarity:4},{id:130,name:"金ネコ",rarity:3},{id:132,name:"ねねこ",rarity:3},{id:136,name:"ツルの恩返し",rarity:4},{id:144,name:"ねこナース",rarity:4},{id:145,name:"にゃんこ城Mini",rarity:3},{id:146,name:"ねこガンマン",rarity:2},{id:147,name:"たけうまねこ",rarity:2},{id:148,name:"ブリキネコ",rarity:2},{id:149,name:"ねこロッカー",rarity:2},{id:150,name:"ねこ人魚",rarity:2},{id:151,name:"窓辺の乙女ネコ",rarity:3},{id:152,name:"ネコバーベル",rarity:3},{id:153,name:"ネコスケート",rarity:3},{id:154,name:"ネコトースター",rarity:3},{id:169,name:"アシルガ",rarity:4},{id:170,name:"クビルガ",rarity:4},{id:171,name:"テコルガ",rarity:4},{id:172,name:"バララガ",rarity:4},{id:197,name:"キャットマンダディ",rarity:4},{id:198,name:"サイキックネコ",rarity:2},{id:199,name:"ねこ陰陽師",rarity:2},{id:200,name:"ネコサーファー",rarity:3},{id:201,name:"メタルネコ",rarity:3},{id:238,name:"おかめはちもくネコ",rarity:3},{id:239,name:"ボンボンネコ",rarity:3},{id:240,name:"見習いスニャイパー",rarity:3},{id:241,name:"トゲルガ",rarity:4},{id:258,name:"天空神ゼウス",rarity:4},{id:259,name:"守護神アヌビス",rarity:4},{id:260,name:"美女神アフロディーテ",rarity:4},{id:272,name:"太陽神アマテラス",rarity:4},{id:273,name:"繁栄神ガネーシャ",rarity:4},{id:287,name:"閃雷機兵レイ",rarity:4},{id:308,name:"ネコジャンパー",rarity:3},{id:309,name:"ネコバサミ",rarity:2},{id:317,name:"海王神ポセイドン",rarity:4},{id:326,name:"ネコボクサー",rarity:2},{id:377,name:"ネコ探査機",rarity:2},{id:378,name:"ネコフェンシング",rarity:3},{id:440,name:"時空神クロノス",rarity:4},{id:444,name:"ネコ医師",rarity:2},{id:445,name:"ネコ占い師",rarity:2},{id:446,name:"ネコシャーマン",rarity:2},{id:447,name:"ネコ魔女",rarity:2},{id:448,name:"ネコアーチャー",rarity:2},{id:494,name:"竜騎士バルス",rarity:4},{id:496,name:"ネコパーフェクト",rarity:3},{id:523,name:"ネコ武闘家",rarity:2},{id:524,name:"ネコ法師",rarity:2},{id:535,name:"竜戦機ライデン",rarity:4},{id:643,name:"神龍かむくら",rarity:4},{id:724,name:"聖龍メギドラ",rarity:4},{id:812,name:"地龍ソドム",rarity:4}
@@ -166,14 +212,19 @@
                     .sort((a, b) => a.sort - b.sort);
                 if (sortedGachas.length > 0) {
                     tableGachaIds.push(sortedGachas[0].id);
+                    if (sortedGachas.length > 1) {
+                        tableGachaIds.push(sortedGachas[1].id);
+                    }
                 }
             }
 
             if (seedParam) {
                 document.getElementById('seed').value = seedParam;
+                showSeedInput(); // if seed is in URL, show the input
             }
             if (simConfigParam) {
                 document.getElementById('sim-config').value = simConfigParam;
+                showSimInput(); // if sim_config is in URL, show the input
             }
 
             document.getElementById('result').classList.toggle('hidden', !showResultDisplay);
@@ -1134,11 +1185,10 @@
                 // --- セルコンテンツ生成ロジックのヘルパー関数 ---
                 function generateCellContent(track, i, id) {
                     const gachaIndex = gachaConfigs.findIndex(c => c.id === id);
-                    if (gachaIndex === -1 || !tableData[i] || !tableData[i][track][gachaIndex] || !tableData[i][track][gachaIndex].roll) return 'N/A';
+                    if (gachaIndex === -1 || !tableData[i] || !tableData[i][track][gachaIndex] || !tableData[i][track][gachaIndex].roll) return '<td>N/A</td>';
                     
                     const fullRoll = tableData[i][track][gachaIndex].roll;
                     
-                    // ★ デフォルトリンク と 代替リンク を両方取得
                     const configStr = cellSimConfigs.get(`${track}-${i}-${id}`);
                     const altData = cellSimConfigs_Alt.get(`${track}-${i}-${id}`) || { link: null, rerollCharName: null };
                     const altConfigStr = altData.link;
@@ -1148,35 +1198,38 @@
                         highlightClass = ' highlight-uber';
                     }
 
+                    let cellStyle = '';
+                    if (!highlightClass) {
+                        const seedVal = (track === 'A' ? seeds[i * 2] : seeds[i * 2 + 1]) % 10000;
+                        if (seedVal >= 9970) { cellStyle = 'background-color: #DDA0DD;'; } // plum
+                        else if (seedVal >= 9940) { cellStyle = 'background-color: #9370DB;'; } // mediumpurple
+                        else if (seedVal >= 9470) { cellStyle = 'background-color: #FF4C4C;'; } // vivid red
+                        else if (seedVal >= 9070) { cellStyle = 'background-color: #FFB6C1;'; } // lightpink
+                        else if (seedVal >= 6970) { cellStyle = 'background-color: #FFDAB9;'; } // peachpuff
+                        else if (seedVal >= 6470) { cellStyle = 'background-color: #FFFFE0;'; } // lightyellow
+                    }
+
                     let cellContent = '';
                     
-                    // 1. Next Cell Address/Link Calculation
                     let nextAddress = null;
                     
-                    // 3シード消費: A(i) -> B(i+1) or B(i) -> A(i+2)
                     if (fullRoll.seedsConsumed === 3) {
                         const destTrack = (track === 'A' ? 'B' : 'A');
                         const destRow = (track === 'A' ? i + 1 : i + 2);
-                        // リンクの有無にかかわらず、遷移先番地を計算
                         if (destRow < numRolls) { 
                             nextAddress = `${destRow + 1}${destTrack}`; 
                         }
                     } 
-                    // 2シード消費は nextAddress = null (要件に従い非表示)
 
                     let addressPrefix = nextAddress ? `${nextAddress}) ` : '';
                     
-                    // --- ★ 修正: 回避/誘発ロジックを反映 ---
-                    
                     if (fullRoll.isRerolled) {
-                        // === デフォルト: 3-seed (レア被り) ===
                         const originalCharName = fullRoll.originalChar.name;
                         const rerollCharName = fullRoll.finalChar.name;
                         
                         let originalDisplay = originalCharName;
                         let rerollDisplay = rerollCharName;
 
-                        // 再抽選後 (デフォルトリンク)
                         if (configStr) {
                             const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configStr)}&gachas=${tableGachaIds.join('-')}`;
                             const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${configStr}'; resetAndGenerateTable();`;
@@ -1185,26 +1238,21 @@
                             rerollDisplay = `${addressPrefix}${rerollCharName}`;
                         }
                         
-                        // 再抽選前 (回避リンク)
                         if (altConfigStr) {
                             const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(altConfigStr)}&gachas=${tableGachaIds.join('-')}`;
                             const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${altConfigStr}'; resetAndGenerateTable();`;
-                            // 回避(2-seed)はアドレスプレフィックスがつかない
                             originalDisplay = `<a href="${href}" onclick="${onclickAction}">${originalCharName}</a>`;
                         }
                         
                         cellContent = `${originalDisplay}<br>${rerollDisplay}`;
                         
                     } else {
-                        // === デフォルト: 2-seed (通常) ===
                         const originalCharName = fullRoll.finalChar.name;
                         let originalDisplay = originalCharName;
                         
-                        // 通常キャラ (デフォルトリンク)
                         if (configStr) {
                             const href = `?seed=${initialSeed}&sim_config=${encodeURIComponent(configStr)}&gachas=${tableGachaIds.join('-')}`;
                             const onclickAction = `event.preventDefault(); document.getElementById('sim-config').value = '${configStr}'; resetAndGenerateTable();`;
-                            // 2シード消費は nextAddress=null のためアドレスは表示されない
                             originalDisplay = `<a href="${href}" onclick="${onclickAction}">${addressPrefix}${originalCharName}</a>`;
                         } else {
                             originalDisplay = `${addressPrefix}${originalCharName}`;
@@ -1212,12 +1260,9 @@
                         
                         cellContent = originalDisplay;
                         
-                        // 再抽選後 (誘発リンク)
                         if (altConfigStr) {
                             const rerollCharName = altData.rerollCharName || "??";
                             
-                            // 誘発(3-seed)はアドレスプレフィックスが *つく*
-                            // デフォルトロールは2シードだったが、この代替パスは3シードなので、ここで宛先を計算する必要がある
                             let inducedAddress = null;
                             const destTrack = (track === 'A' ? 'B' : 'A');
                             const destRow = (track === 'A' ? i + 1 : i + 2);
@@ -1234,9 +1279,8 @@
                             cellContent = `${originalDisplay}<br>${rerollDisplay}`;
                         }
                     }
-                    // ---------------------------------
 
-                    return `<td class="gacha-cell${highlightClass}">${cellContent}</td>`;
+                    return `<td class="gacha-cell${highlightClass}" style="${cellStyle}">${cellContent}</td>`;
                 }
                 
                 // --- ヘルパー関数 終了 ---
